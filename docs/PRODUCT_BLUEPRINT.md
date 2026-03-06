@@ -147,11 +147,19 @@ Frontend on Vercel:
 2. Set `NEXT_PUBLIC_API_BASE` to your backend URL.
 3. Build command: `npm run build`, output managed by Next.js.
 
-Backend on Railway/Supabase:
+Backend on Railway/Supabase (or Render):
 1. Deploy `backend` service.
 2. Set env vars: `DATABASE_URL`, `JWT_SECRET`, `FRONTEND_URL`.
-3. Run schema once via `npm run db:schema`.
-4. Expose service URL and update frontend env.
+3. Optional: set separate production/debug URLs:
+
+```
+FRONTEND_URL_PROD=https://teal-ganache-11922e.netlify.app
+BACKEND_URL_PROD=https://f1-fantasy-league-backend.onrender.com
+DEBUG=false
+```
+
+4. Run schema once via `npm run db:schema`.
+5. Expose service URL and update frontend env.
 
 Database:
 - Use managed PostgreSQL (Railway Postgres or Supabase Postgres).

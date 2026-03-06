@@ -117,3 +117,30 @@ See `docs/PRODUCT_BLUEPRINT.md` for:
 - UI page structure
 - build and deployment guide
 - security and scaling strategy
+
+## Production URLs & Deployment Environment Variables
+
+When running in production, set the following environment variables.
+
+- **Frontend production URL**: FRONTEND_URL_PROD = https://teal-ganache-11922e.netlify.app
+- **Backend production URL**: BACKEND_URL_PROD = https://f1-fantasy-league-backend.onrender.com
+
+Backend env examples (set via your host's env UI):
+
+```
+FRONTEND_URL_PROD=https://teal-ganache-11922e.netlify.app
+BACKEND_URL_PROD=https://f1-fantasy-league-backend.onrender.com
+DEBUG=false
+```
+
+Frontend env examples (Next.js - set build-time vars):
+
+```
+NEXT_PUBLIC_API_BASE_PROD=https://f1-fantasy-league-backend.onrender.com/api
+NEXT_PUBLIC_DEBUG=false
+```
+
+Notes:
+- On Netlify/Vercel, add `NEXT_PUBLIC_*` vars in the project settings and trigger a rebuild after changes.
+- On Render/Railway, add backend `FRONTEND_URL_PROD` and `BACKEND_URL_PROD` in the service's environment settings.
+- The backend CORS is configured to allow both debug and production frontend origins; restrict to production origin in production if desired.

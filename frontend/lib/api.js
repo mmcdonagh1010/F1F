@@ -1,6 +1,9 @@
 import { clearAuthSession, getStoredToken } from "./auth";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:4000/api";
+const isDebug = process.env.NEXT_PUBLIC_DEBUG === "true" || process.env.NODE_ENV !== "production";
+const API_BASE = isDebug
+  ? process.env.NEXT_PUBLIC_API_BASE_DEBUG || process.env.NEXT_PUBLIC_API_BASE || "http://localhost:4000/api"
+  : process.env.NEXT_PUBLIC_API_BASE_PROD || process.env.NEXT_PUBLIC_API_BASE || "http://localhost:4000/api";
 
 export async function apiFetch(path, options = {}) {
   const token = getStoredToken();

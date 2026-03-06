@@ -13,9 +13,11 @@ import leagueRoutes from "./routes/leagues.js";
 const app = express();
 
 app.use(helmet());
+const allowedOrigins = [config.frontendUrlDebug, config.frontendUrlProduction].filter(Boolean);
+
 app.use(
   cors({
-    origin: config.frontendUrl,
+    origin: allowedOrigins,
     credentials: true
   })
 );

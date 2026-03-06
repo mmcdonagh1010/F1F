@@ -1,4 +1,4 @@
-// File: C:\Users\mmcdonag\OneDrive - Intel Corporation\Documents\ToolsScripts\F1F\frontend\app\layout.js
+// File: /Users/markmcdonagh/Documents/VSCode/F1F_new/frontend/app/layout.js
 import * as entry from '../../../app/layout.js'
 import type { ResolvingMetadata, ResolvingViewport } from 'next/dist/lib/metadata/types/metadata-interface.js'
 

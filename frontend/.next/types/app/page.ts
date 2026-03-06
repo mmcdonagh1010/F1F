@@ -1,4 +1,4 @@
-// File: C:\Users\mmcdonag\OneDrive - Intel Corporation\Documents\ToolsScripts\F1F\frontend\app\page.js
+// File: /Users/markmcdonagh/Documents/VSCode/F1F_new/frontend/app/page.js
 import * as entry from '../../../app/page.js'
 import type { ResolvingMetadata, ResolvingViewport } from 'next/dist/lib/metadata/types/metadata-interface.js'
 
