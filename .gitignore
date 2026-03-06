@@ -1,0 +1,24 @@
+# Node modules
+node_modules/
+
+# Environment variables
+.env
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# MacOS system files
+.DS_Store
+
+# VS Code settings folder
+.vscode/
+
+# Build output
+dist/
+build/
+
+# Optional: temporary files
+tmp/
+*.tmp
