@@ -1,0 +1,21 @@
+{
+  "name": "Fantasy F1 League",
+  "short_name": "F1 Picks",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#06161b",
+  "theme_color": "#ff3b30",
+  "description": "Mobile-first private Fantasy Formula 1 picks app",
+  "icons": [
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}

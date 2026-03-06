@@ -1,0 +1,53 @@
+@import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Manrope:wght@400;600;700;800&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg: #06161b;
+  --bg-2: #0c242b;
+  --text: #f3fbff;
+  --muted: #9db6bf;
+  --accent-red: #ff3b30;
+  --accent-cyan: #00c2d1;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  color: var(--text);
+  background:
+    radial-gradient(circle at 10% 20%, rgba(0, 194, 209, 0.18), transparent 40%),
+    radial-gradient(circle at 90% 10%, rgba(255, 59, 48, 0.14), transparent 34%),
+    linear-gradient(165deg, var(--bg) 0%, var(--bg-2) 55%, #112c34 100%);
+  min-height: 100vh;
+  font-family: "Manrope", sans-serif;
+}
+
+main {
+  width: min(100%, 720px);
+  margin: 0 auto;
+  padding: 16px;
+}
+
+.card {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 18px;
+  box-shadow: 0 14px 30px rgba(0, 0, 0, 0.22);
+  backdrop-filter: blur(8px);
+}
+
+.tap {
+  min-height: 48px;
+}
+
+@media (min-width: 768px) {
+  main {
+    padding: 24px;
+  }
+}
