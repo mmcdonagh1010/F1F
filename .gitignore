@@ -1,24 +1,14 @@
 # Node modules
 node_modules/
+*.node
 
-# Environment variables
+# Environment files
 .env
 
-# Logs
-logs/
-*.log
-npm-debug.log*
-
-# MacOS system files
-.DS_Store
-
-# VS Code settings folder
+# VS Code and Mac files
 .vscode/
+.DS_Store
 
 # Build output
 dist/
 build/
-
-# Optional: temporary files
-tmp/
-*.tmp
