@@ -1,0 +1,12 @@
+[build]
+  base = "frontend"
+  command = "npm run build"
+  publish = "frontend/.next"
+
+[[plugins]]
+  package = "@netlify/plugin-nextjs"
+
+[context.production.environment]
+# Ensure the frontend knows the API base at build time (override in Netlify UI if needed)
+NEXT_PUBLIC_API_BASE_PROD = "https://f1-fantasy-league-backend.onrender.com/api"
+NEXT_PUBLIC_DEBUG = "false"
