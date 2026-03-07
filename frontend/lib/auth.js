@@ -105,7 +105,14 @@ export function refreshAuthSessionExpiry() {
 
 export function getAuthSessionExpiry() {
   if (typeof window === "undefined") return 0;
-  return getStoredExpiryAt();
+  const expiresAt = getStoredExpiryAt();
+  if (expiresAt > 0) return expiresAt;
+
+  const token = readStorageValue(TOKEN_KEY);
+  const rawUser = readStorageValue(USER_KEY);
+  if (!token || !rawUser) return 0;
+
+  return refreshAuthSessionExpiry();
 }
 
 export function isAuthSessionExpired() {
