@@ -1,5 +1,9 @@
 const TOKEN_KEY = "f1f_token";
 const USER_KEY = "f1f_user";
+const SESSION_EXPIRES_AT_KEY = "f1f_session_expires_at";
+
+export const SESSION_TIMEOUT_MS = 30 * 60 * 1000;
+export const SESSION_WARNING_MS = 60 * 1000;
 
 function getCookieValue(name) {
   if (typeof document === "undefined") return "";
@@ -33,12 +37,46 @@ function writeStorageValue(key, value) {
 }
 
 function removeStoredAuthKeys() {
+  sessionStorage.removeItem(SESSION_EXPIRES_AT_KEY);
   sessionStorage.removeItem(TOKEN_KEY);
   sessionStorage.removeItem(USER_KEY);
+  localStorage.removeItem(SESSION_EXPIRES_AT_KEY);
   localStorage.removeItem(TOKEN_KEY);
   localStorage.removeItem(USER_KEY);
+  clearCookieValue(SESSION_EXPIRES_AT_KEY);
   clearCookieValue(TOKEN_KEY);
   clearCookieValue(USER_KEY);
+}
+
+function getStoredExpiryAt() {
+  const rawValue = readStorageValue(SESSION_EXPIRES_AT_KEY);
+  const parsed = Number(rawValue);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function writeStoredExpiryAt(expiresAt) {
+  writeStorageValue(SESSION_EXPIRES_AT_KEY, String(expiresAt));
+}
+
+export function refreshAuthSessionExpiry() {
+  if (typeof window === "undefined") return 0;
+  const token = readStorageValue(TOKEN_KEY);
+  const rawUser = readStorageValue(USER_KEY);
+  if (!token || !rawUser) return 0;
+
+  const expiresAt = Date.now() + SESSION_TIMEOUT_MS;
+  writeStoredExpiryAt(expiresAt);
+  return expiresAt;
+}
+
+export function getAuthSessionExpiry() {
+  if (typeof window === "undefined") return 0;
+  return getStoredExpiryAt();
+}
+
+export function isAuthSessionExpired() {
+  const expiresAt = getAuthSessionExpiry();
+  return expiresAt > 0 && expiresAt <= Date.now();
 }
 
 export function getStoredToken() {
@@ -47,6 +85,11 @@ export function getStoredToken() {
   const rawUser = readStorageValue(USER_KEY);
 
   if (!token && rawUser) {
+    removeStoredAuthKeys();
+    return null;
+  }
+
+  if (token && isAuthSessionExpired()) {
     removeStoredAuthKeys();
     return null;
   }
@@ -80,6 +123,7 @@ export function storeAuthSession(token, user) {
   if (typeof window === "undefined") return;
   writeStorageValue(TOKEN_KEY, token);
   writeStorageValue(USER_KEY, JSON.stringify(user));
+  refreshAuthSessionExpiry();
 }
 
 export function clearAuthSession() {

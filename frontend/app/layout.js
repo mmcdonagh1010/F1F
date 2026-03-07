@@ -1,4 +1,5 @@
 import "./globals.css";
+import SessionManager from "../components/SessionManager";
 import ServiceWorkerReset from "../components/ServiceWorkerReset";
 
 export const metadata = {
@@ -12,6 +13,7 @@ export default function RootLayout({ children }) {
     <html lang="en">
       <body>
         <ServiceWorkerReset />
+        <SessionManager />
         <main>{children}</main>
       </body>
     </html>
