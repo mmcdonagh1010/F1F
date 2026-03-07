@@ -1,13 +1,13 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { useParams, useSearchParams } from "next/navigation";
 import Header from "../../../../components/Header";
 import BottomNav from "../../../../components/BottomNav";
 import { apiFetch } from "../../../../lib/api";
 
-export default function PlayerLeaderboardDetailPage() {
+function PlayerLeaderboardDetailPageContent() {
   const params = useParams();
   const searchParams = useSearchParams();
   const year = searchParams.get("year") || String(new Date().getUTCFullYear());
@@ -106,5 +106,13 @@ export default function PlayerLeaderboardDetailPage() {
 
       <BottomNav />
     </div>
+  );
+}
+
+export default function PlayerLeaderboardDetailPage() {
+  return (
+    <Suspense fallback={<div className="pb-24"><Header title="Player Scoring Detail" subtitle="Loading breakdown" /><p className="card p-4 text-sm text-slate-300">Loading player detail...</p><BottomNav /></div>}>
+      <PlayerLeaderboardDetailPageContent />
+    </Suspense>
   );
 }

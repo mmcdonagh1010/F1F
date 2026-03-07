@@ -1,13 +1,13 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import Header from "../../components/Header";
 import BottomNav from "../../components/BottomNav";
 import { apiFetch } from "../../lib/api";
 
-export default function LeaderboardPage() {
+function LeaderboardPageContent() {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -354,5 +354,13 @@ export default function LeaderboardPage() {
       </section>
       <BottomNav />
     </div>
+  );
+}
+
+export default function LeaderboardPage() {
+  return (
+    <Suspense fallback={<div className="pb-24"><Header title="Season Leaderboard" subtitle="Loading standings" /><p className="card p-4 text-sm text-slate-300">Loading leaderboard...</p><BottomNav /></div>}>
+      <LeaderboardPageContent />
+    </Suspense>
   );
 }
