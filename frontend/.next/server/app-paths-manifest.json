@@ -1,4 +1,13 @@
 {
+  "/_not-found/page": "app/_not-found/page.js",
   "/(auth)/login/page": "app/(auth)/login/page.js",
-  "/page": "app/page.js"
+  "/admin/page": "app/admin/page.js",
+  "/(auth)/register/page": "app/(auth)/register/page.js",
+  "/dashboard/page": "app/dashboard/page.js",
+  "/admin/results/page": "app/admin/results/page.js",
+  "/leaderboard/page": "app/leaderboard/page.js",
+  "/leaderboard/player/[userId]/page": "app/leaderboard/player/[userId]/page.js",
+  "/page": "app/page.js",
+  "/races/[raceId]/picks/page": "app/races/[raceId]/picks/page.js",
+  "/results/[raceId]/page": "app/results/[raceId]/page.js"
 }
