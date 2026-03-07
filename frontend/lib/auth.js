@@ -95,8 +95,7 @@ function writeStoredExpiryAt(expiresAt) {
 export function refreshAuthSessionExpiry() {
   if (typeof window === "undefined") return 0;
   const token = readStorageValue(TOKEN_KEY);
-  const rawUser = readStorageValue(USER_KEY);
-  if (!token || !rawUser) return 0;
+  if (!token) return 0;
 
   const expiresAt = Date.now() + SESSION_TIMEOUT_MS;
   writeStoredExpiryAt(expiresAt);
@@ -109,8 +108,7 @@ export function getAuthSessionExpiry() {
   if (expiresAt > 0) return expiresAt;
 
   const token = readStorageValue(TOKEN_KEY);
-  const rawUser = readStorageValue(USER_KEY);
-  if (!token || !rawUser) return 0;
+  if (!token) return 0;
 
   return refreshAuthSessionExpiry();
 }
