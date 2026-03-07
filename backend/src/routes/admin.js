@@ -436,6 +436,57 @@ router.get("/leagues", async (_req, res) => {
   }
 });
 
+router.patch("/leagues/:leagueId", async (req, res) => {
+  const { leagueId } = req.params;
+  const { name, inviteCode } = req.body || {};
+
+  if (!name && !inviteCode) {
+    return res.status(400).json({ error: "Nothing to update" });
+  }
+
+  const normalizedName = String(name || "").trim();
+  const normalizedInviteCode = String(inviteCode || "").trim().toUpperCase();
+
+  if (name && !normalizedName) {
+    return res.status(400).json({ error: "League name is required" });
+  }
+
+  if (inviteCode && !normalizedInviteCode) {
+    return res.status(400).json({ error: "Invite code is required" });
+  }
+
+  try {
+    const { connectMongo } = await import("../mongo.js");
+    const League = (await import("../models/League.js")).default;
+    const LeagueMember = (await import("../models/LeagueMember.js")).default;
+    await connectMongo();
+
+    if (normalizedInviteCode) {
+      const existing = await League.findOne({ invite_code: normalizedInviteCode, _id: { $ne: leagueId } }).lean().exec();
+      if (existing) return res.status(409).json({ error: "Invite code already in use" });
+    }
+
+    const updates = {};
+    if (normalizedName) updates.name = normalizedName;
+    if (normalizedInviteCode) updates.invite_code = normalizedInviteCode;
+
+    const updated = await League.findByIdAndUpdate(leagueId, updates, { new: true }).lean().exec();
+    if (!updated) return res.status(404).json({ error: "League not found" });
+
+    const memberCount = await LeagueMember.countDocuments({ league: updated._id });
+    return res.json({
+      id: String(updated._id),
+      name: updated.name,
+      invite_code: updated.invite_code,
+      created_at: updated.created_at,
+      member_count: memberCount
+    });
+  } catch (err) {
+    console.error('Update league failed', err);
+    return res.status(500).json({ error: 'Failed to update league' });
+  }
+});
+
 router.get("/leagues/:leagueId/members", async (req, res) => {
   const { leagueId } = req.params;
   try {
@@ -510,6 +561,88 @@ router.post("/races", async (req, res) => {
     return res.status(201).json(created);
   } catch (error) {
     return res.status(400).json({ error: error.message || "Failed to create race" });
+  }
+});
+
+router.patch("/races/:raceId", async (req, res) => {
+  const { raceId } = req.params;
+  const {
+    name,
+    circuitName,
+    raceDate,
+    deadlineAt,
+    leagueId,
+    leagueIds,
+    applyToAllLeagues,
+    externalRound
+  } = req.body || {};
+
+  if (!name || !circuitName || !raceDate || !deadlineAt) {
+    return res.status(400).json({ error: "name, circuitName, raceDate and deadlineAt are required" });
+  }
+
+  const roundValue = externalRound ? Number(externalRound) : null;
+  if (externalRound && (!Number.isInteger(roundValue) || roundValue < 1 || roundValue > 30)) {
+    return res.status(400).json({ error: "externalRound must be an integer from 1 to 30" });
+  }
+
+  try {
+    const { connectMongo } = await import("../mongo.js");
+    const League = (await import("../models/League.js")).default;
+    const Race = (await import("../models/Race.js")).default;
+    await connectMongo();
+
+    const allLeagues = await League.find().sort({ created_at: 1 }).select("_id").lean().exec();
+    const allLeagueIds = allLeagues.map((league) => String(league._id));
+    if (allLeagueIds.length === 0) {
+      return res.status(400).json({ error: "Create at least one league before updating a race" });
+    }
+
+    let assignedLeagueIds = [];
+    if (Array.isArray(leagueIds) && leagueIds.length > 0) {
+      const unique = [...new Set(leagueIds.map((id) => String(id).trim()).filter(Boolean))];
+      assignedLeagueIds = unique.filter((id) => allLeagueIds.includes(id));
+    } else if (applyToAllLeagues !== false) {
+      assignedLeagueIds = allLeagueIds;
+    } else if (leagueId) {
+      assignedLeagueIds = allLeagueIds.includes(String(leagueId)) ? [String(leagueId)] : [];
+    }
+
+    if (assignedLeagueIds.length === 0) {
+      return res.status(400).json({ error: "Select at least one valid league for this race" });
+    }
+
+    const updated = await Race.findByIdAndUpdate(
+      raceId,
+      {
+        league: assignedLeagueIds[0],
+        leagues: assignedLeagueIds,
+        name: String(name).trim(),
+        circuit_name: String(circuitName).trim(),
+        external_round: roundValue,
+        race_date: new Date(raceDate),
+        deadline_at: new Date(deadlineAt)
+      },
+      { new: true }
+    ).lean().exec();
+
+    if (!updated) return res.status(404).json({ error: "Race not found" });
+
+    return res.json({
+      id: String(updated._id),
+      league_id: updated.league || null,
+      leagues: (updated.leagues || []).map((id) => String(id)),
+      name: updated.name,
+      circuit_name: updated.circuit_name,
+      external_round: updated.external_round || null,
+      race_date: updated.race_date,
+      deadline_at: updated.deadline_at,
+      status: updated.status || null,
+      is_visible: Boolean(updated.is_visible)
+    });
+  } catch (err) {
+    console.error("Update race failed", err);
+    return res.status(500).json({ error: "Failed to update race" });
   }
 });
 
