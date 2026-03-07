@@ -20,7 +20,7 @@ export async function apiFetch(path, options = {}) {
   });
 
   if (!res.ok) {
-    if (res.status === 401 || res.status === 403) {
+    if (res.status === 401) {
       clearAuthSession();
       if (typeof window !== "undefined") {
         const authRoutes = new Set(["/login", "/register"]);
