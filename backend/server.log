@@ -1,0 +1,18 @@
+Backend listening on port 4000
+SyntaxError: Unexpected token 'n', "name:CI" is not valid JSON
+    at JSON.parse (<anonymous>)
+    at createStrictSyntaxError (/Users/markmcdonagh/Documents/VSCode/F1F_new/backend/node_modules/body-parser/lib/types/json.js:169:10)
+    at parse (/Users/markmcdonagh/Documents/VSCode/F1F_new/backend/node_modules/body-parser/lib/types/json.js:86:15)
+    at /Users/markmcdonagh/Documents/VSCode/F1F_new/backend/node_modules/body-parser/lib/read.js:128:18
+    at AsyncResource.runInAsyncScope (node:async_hooks:206:9)
+    at invokeCallback (/Users/markmcdonagh/Documents/VSCode/F1F_new/backend/node_modules/raw-body/index.js:238:16)
+    at done (/Users/markmcdonagh/Documents/VSCode/F1F_new/backend/node_modules/raw-body/index.js:227:7)
+    at IncomingMessage.onEnd (/Users/markmcdonagh/Documents/VSCode/F1F_new/backend/node_modules/raw-body/index.js:287:7)
+    at IncomingMessage.emit (node:events:518:28)
+    at endReadableNT (node:internal/streams/readable:1696:12) {
+  expose: true,
+  statusCode: 400,
+  status: 400,
+  body: 'name:CI',
+  type: 'entity.parse.failed'
+}

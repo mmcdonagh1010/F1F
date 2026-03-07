@@ -19,6 +19,7 @@ export const config = {
   databaseUrl: process.env.DATABASE_URL,
   jwtSecret: process.env.JWT_SECRET || "dev_secret",
   jwtExpiresIn: process.env.JWT_EXPIRES_IN || "7d",
+  mongodbUri: process.env.MONGODB_URI || process.env.MONGO_URI || "",
   frontendUrlDebug,
   frontendUrlProduction: frontendUrlProd,
   backendUrlDebug,

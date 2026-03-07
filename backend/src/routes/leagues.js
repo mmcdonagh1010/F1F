@@ -1,22 +1,25 @@
 import express from "express";
-import { query } from "../db.js";
+import mongoose from 'mongoose';
 import { authRequired } from "../middleware/auth.js";
+import League from "../models/League.js";
+import LeagueMember from "../models/LeagueMember.js";
 
 const router = express.Router();
 
 router.use(authRequired);
 
 router.get("/mine", async (req, res) => {
-  const leagues = await query(
-    `SELECT l.id, l.name, l.invite_code, lm.joined_at
-     FROM league_members lm
-     JOIN leagues l ON l.id = lm.league_id
-     WHERE lm.user_id = $1
-     ORDER BY lm.joined_at DESC`,
-    [req.user.id]
-  );
+  const userId = req.user.id;
+  const members = await LeagueMember.find({ user: userId }).populate('league').sort({ joined_at: -1 }).exec();
 
-  return res.json(leagues.rows);
+  const mapped = members.map((m) => ({
+    id: m.league._id,
+    name: m.league.name,
+    invite_code: m.league.invite_code,
+    joined_at: m.joined_at
+  }));
+
+  return res.json(mapped);
 });
 
 router.post("/join", async (req, res) => {
@@ -25,26 +28,18 @@ router.post("/join", async (req, res) => {
     return res.status(400).json({ error: "inviteCode is required" });
   }
 
-  const league = await query(
-    `SELECT id, name, invite_code
-     FROM leagues
-     WHERE invite_code = $1
-     LIMIT 1`,
-    [inviteCode]
-  );
-
-  if (league.rowCount === 0) {
+  const league = await League.findOne({ invite_code: inviteCode }).lean().exec();
+  if (!league) {
     return res.status(404).json({ error: "Invalid invite code" });
   }
 
-  await query(
-    `INSERT INTO league_members (league_id, user_id)
-     VALUES ($1, $2)
-     ON CONFLICT DO NOTHING`,
-    [league.rows[0].id, req.user.id]
-  );
+  await LeagueMember.updateOne(
+    { league: league._id, user: req.user.id },
+    { $setOnInsert: { joined_at: new Date() } },
+    { upsert: true }
+  ).exec();
 
-  return res.json({ message: "Joined league", league: league.rows[0] });
+  return res.json({ message: "Joined league", league: { id: league._id, name: league.name, invite_code: league.invite_code } });
 });
 
 export default router;

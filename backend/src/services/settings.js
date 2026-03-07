@@ -1,5 +1,7 @@
-import { query } from "../db.js";
 import { config } from "../config.js";
+
+import AppSetting from "../models/AppSetting.js";
+import { connectMongo } from "../mongo.js";
 
 const PICK_LOCK_KEY = "pick_lock_minutes_before_deadline";
 
@@ -11,19 +13,16 @@ export function normalizePickLockMinutes(value) {
 }
 
 export async function getPickLockMinutesBeforeDeadline() {
-  const result = await query(
-    `SELECT setting_value
-     FROM app_settings
-     WHERE setting_key = $1`,
-    [PICK_LOCK_KEY]
-  );
-
-  if (result.rowCount === 0) {
+  try {
+    await connectMongo();
+    const doc = await AppSetting.findOne({ setting_key: PICK_LOCK_KEY }).lean().exec();
+    if (!doc) return config.pickLockMinutesBeforeDeadline;
+    const saved = normalizePickLockMinutes(doc.setting_value);
+    return saved ?? config.pickLockMinutesBeforeDeadline;
+  } catch (err) {
+    // fallback to config/default if mongo not available
     return config.pickLockMinutesBeforeDeadline;
   }
-
-  const saved = normalizePickLockMinutes(result.rows[0].setting_value);
-  return saved ?? config.pickLockMinutesBeforeDeadline;
 }
 
 export async function setPickLockMinutesBeforeDeadline(minutes) {
@@ -32,19 +31,16 @@ export async function setPickLockMinutesBeforeDeadline(minutes) {
     throw new Error("PICK_LOCK_MINUTES_BEFORE_DEADLINE must be an integer from 0 to 180");
   }
 
-  const updated = await query(
-    `INSERT INTO app_settings (setting_key, setting_value)
-     VALUES ($1, $2)
-     ON CONFLICT (setting_key)
-     DO UPDATE SET setting_value = EXCLUDED.setting_value,
-                   updated_at = NOW()
-     RETURNING setting_key, setting_value, updated_at`,
-    [PICK_LOCK_KEY, String(normalized)]
-  );
+  try {
+    await connectMongo();
+    const updated = await AppSetting.findOneAndUpdate(
+      { setting_key: PICK_LOCK_KEY },
+      { setting_value: String(normalized), updated_at: new Date() },
+      { upsert: true, new: true }
+    ).lean().exec();
 
-  return {
-    key: updated.rows[0].setting_key,
-    value: Number(updated.rows[0].setting_value),
-    updatedAt: updated.rows[0].updated_at
-  };
+    return { key: updated.setting_key, value: Number(updated.setting_value), updatedAt: updated.updated_at };
+  } catch (err) {
+    throw err;
+  }
 }

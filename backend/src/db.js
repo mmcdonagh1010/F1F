@@ -1,13 +1,15 @@
-import pg from "pg";
-import { config } from "./config.js";
+import { connectMongo, getMongoose } from './mongo.js';
 
-const { Pool } = pg;
+// SQL shim removed — project is MongoDB/Mongoose native.
+// Export a `connect` helper (wraps `connectMongo`) and `getMongoose`
+// so callers can obtain the active Mongoose connection if needed.
 
-export const pool = new Pool({
-  connectionString: config.databaseUrl,
-  ssl: config.nodeEnv === "production" ? { rejectUnauthorized: false } : false
-});
-
-export async function query(text, params) {
-  return pool.query(text, params);
+export async function connect() {
+  return connectMongo();
 }
+
+export function getDbMongoose() {
+  return getMongoose();
+}
+
+export default connect;
