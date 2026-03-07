@@ -60,6 +60,14 @@ function extractDriverTeams(payload) {
   return teams;
 }
 
+function extractConstructors(payload) {
+  return payload?.MRData?.ConstructorTable?.Constructors || [];
+}
+
+function extractConstructorDrivers(payload) {
+  return payload?.MRData?.DriverTable?.Drivers || [];
+}
+
 function buildDriverLookupKey(name) {
   return String(name || "").trim().toLowerCase();
 }
@@ -198,14 +206,46 @@ async function fetchSeasonDriverTeams(season) {
   const candidateSeasons = [...new Set([preferredSeason, preferredSeason - 1, preferredSeason - 2].filter((value) => value >= 1950))];
 
   for (const candidateSeason of candidateSeasons) {
+    const constructorPayload = await fetchJson(`${JOLPICA_BASE}/${candidateSeason}/constructors.json`).catch(() => null);
+    const constructors = extractConstructors(constructorPayload);
+
+    if (constructors.length > 0) {
+      const constructorDriverPayloads = await Promise.all(
+        constructors.map(async (constructor) => {
+          const constructorId = constructor?.constructorId;
+          const teamName = constructor?.name || null;
+          if (!constructorId || !teamName) return null;
+
+          const payload = await fetchJson(`${JOLPICA_BASE}/${candidateSeason}/constructors/${constructorId}/drivers.json`).catch(() => null);
+          return { teamName, payload };
+        })
+      );
+
+      const constructorTeams = new Map();
+      constructorDriverPayloads.forEach((entry) => {
+        if (!entry?.teamName || !entry.payload) return;
+
+        const drivers = extractConstructorDrivers(entry.payload);
+        drivers.forEach((driver) => {
+          const driverName = getFullDriverName(driver);
+          if (!driverName || constructorTeams.has(driverName)) return;
+          constructorTeams.set(driverName, entry.teamName);
+        });
+      });
+
+      if (constructorTeams.size > 0) {
+        return { teams: constructorTeams, sourceSeason: candidateSeason, source: "constructor-drivers" };
+      }
+    }
+
     const payload = await fetchJson(`${JOLPICA_BASE}/${candidateSeason}/driverStandings.json`).catch(() => null);
     const teams = extractDriverTeams(payload);
     if (teams.size > 0) {
-      return { teams, sourceSeason: candidateSeason };
+      return { teams, sourceSeason: candidateSeason, source: "driver-standings" };
     }
   }
 
-  return { teams: new Map(), sourceSeason: null };
+  return { teams: new Map(), sourceSeason: null, source: null };
 }
 
 async function fetchKnownLocalDriverTeams() {
@@ -429,7 +469,7 @@ export async function syncSeasonFromJolpica({ leagueId, season }) {
 
   const racesPayload = await fetchJson(`${JOLPICA_BASE}/${season}/races.json`);
   const driversPayload = await fetchJson(`${JOLPICA_BASE}/${season}/drivers.json`);
-  const { teams: teamsByDriver, sourceSeason: driverTeamSeason } = await fetchSeasonDriverTeams(season).catch(() => ({ teams: new Map(), sourceSeason: null }));
+  const { teams: teamsByDriver, sourceSeason: driverTeamSeason, source: driverTeamSource } = await fetchSeasonDriverTeams(season).catch(() => ({ teams: new Map(), sourceSeason: null, source: null }));
   const localTeamsByDriver = await fetchKnownLocalDriverTeams().catch(() => new Map());
 
   const races = extractRaces(racesPayload);
@@ -469,7 +509,8 @@ export async function syncSeasonFromJolpica({ leagueId, season }) {
     updated,
     driversPerRace: drivers.length,
     skippedDriverRefresh,
-    driverTeamSeason
+    driverTeamSeason,
+    driverTeamSource
   };
 }
 
