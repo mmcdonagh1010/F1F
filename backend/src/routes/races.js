@@ -15,6 +15,20 @@ function getLockAt(deadlineAt, lockMinutes) {
   return new Date(new Date(deadlineAt).getTime() - lockMs).toISOString();
 }
 
+function serializeCategory(category) {
+  return {
+    ...category,
+    id: String(category._id)
+  };
+}
+
+function serializeDriver(driver) {
+  return {
+    ...driver,
+    id: String(driver._id)
+  };
+}
+
 router.get("/", authRequired, async (req, res) => {
   const lockMinutes = await getPickLockMinutesBeforeDeadline();
   const role = req.user.role || "player";
@@ -91,8 +105,8 @@ router.get("/:raceId", authRequired, async (req, res) => {
     available_leagues: availableLeagues,
     lock_at: lockAt,
     is_locked: new Date(lockAt).getTime() <= Date.now(),
-    categories,
-    drivers
+    categories: categories.map(serializeCategory),
+    drivers: drivers.map(serializeDriver)
   });
 });
 
