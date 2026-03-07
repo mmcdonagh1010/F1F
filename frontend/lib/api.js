@@ -22,6 +22,12 @@ export async function apiFetch(path, options = {}) {
   if (!res.ok) {
     if (res.status === 401 || res.status === 403) {
       clearAuthSession();
+      if (typeof window !== "undefined") {
+        const authRoutes = new Set(["/login", "/register"]);
+        if (!authRoutes.has(window.location.pathname)) {
+          window.location.href = "/login";
+        }
+      }
     }
     const payload = await res.json().catch(() => ({ error: "Request failed" }));
     throw new Error(payload.error || "Request failed");
