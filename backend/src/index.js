@@ -9,6 +9,8 @@ import leaderboardRoutes from "./routes/leaderboard.js";
 import adminRoutes from "./routes/admin.js";
 import notificationRoutes from "./routes/notifications.js";
 import leagueRoutes from "./routes/leagues.js";
+import f1Routes from "./routes/f1.js";
+import { startJolpicaAutoSyncJob } from "./jobs/jolpicaAutoSync.js";
 
 const app = express();
 
@@ -41,6 +43,7 @@ app.use("/api/leaderboard", leaderboardRoutes);
 app.use("/api/admin", adminRoutes);
 app.use("/api/notifications", notificationRoutes);
 app.use("/api/leagues", leagueRoutes);
+app.use("/api/f1", f1Routes);
 
 app.use((err, _req, res, _next) => {
   console.error(err);
@@ -49,4 +52,5 @@ app.use((err, _req, res, _next) => {
 
 app.listen(config.port, () => {
   console.log(`Backend listening on port ${config.port}`);
+  startJolpicaAutoSyncJob();
 });

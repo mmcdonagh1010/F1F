@@ -1,5 +1,6 @@
 import Link from "next/link";
 import Header from "../components/Header";
+import LiveF1Panel from "../components/LiveF1Panel";
 
 export default function LandingPage() {
   return (
@@ -28,6 +29,8 @@ export default function LandingPage() {
           <li>3. Scores auto-calculate and update leaderboard.</li>
         </ul>
       </section>
+
+      <LiveF1Panel compact />
     </div>
   );
 }

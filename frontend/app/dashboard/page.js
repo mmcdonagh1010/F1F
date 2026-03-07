@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import Header from "../../components/Header";
 import BottomNav from "../../components/BottomNav";
+import LiveF1Panel from "../../components/LiveF1Panel";
 import { apiFetch } from "../../lib/api";
 
 export default function DashboardPage() {
@@ -102,6 +103,9 @@ export default function DashboardPage() {
         </article>
       ))}
       {displayedRaces.length === 0 ? <p className="card p-4 text-sm text-slate-300">No upcoming races available.</p> : null}
+
+      <LiveF1Panel />
+
       <BottomNav />
     </div>
   );

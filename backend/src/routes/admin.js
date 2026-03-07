@@ -3,11 +3,14 @@ import crypto from "crypto";
 // MongoDB-only: removed SQL fallback and imports
 import { authRequired, adminRequired } from "../middleware/auth.js";
 import { calculateRaceScores } from "../services/scoring.js";
-import { syncLatestRaceResultsFromJolpica, syncSeasonFromJolpica } from "../services/jolpicaSync.js";
+import { syncCompletedRaceResultsFromJolpica, syncLatestRaceResultsFromJolpica, syncSeasonFromJolpica } from "../services/jolpicaSync.js";
 import { config } from "../config.js";
+import { getJolpicaAutoSyncRuntimeStatus } from "../jobs/jolpicaAutoSync.js";
 import {
+  getJolpicaSyncStatus,
   getPickLockMinutesBeforeDeadline,
   normalizePickLockMinutes,
+  setJolpicaSyncStatus,
   setPickLockMinutesBeforeDeadline
 } from "../services/settings.js";
 
@@ -510,6 +513,7 @@ router.get("/leagues/:leagueId/members", async (req, res) => {
 });
 
 router.post("/sync/jolpica", async (req, res) => {
+  const startedAt = new Date().toISOString();
   try {
     const { leagueId, season } = req.body;
 
@@ -526,15 +530,40 @@ router.post("/sync/jolpica", async (req, res) => {
       if (!league) return res.status(404).json({ error: 'League not found' });
     }
 
+    await setJolpicaSyncStatus({
+      isRunning: true,
+      lastMode: "manual-race-sync",
+      lastRunStartedAt: startedAt,
+      lastErrorMessage: ""
+    });
+
     const summary = await syncSeasonFromJolpica({ leagueId, season: chosenSeason });
+    await setJolpicaSyncStatus({
+      isRunning: false,
+      lastMode: "manual-race-sync",
+      lastRunStartedAt: startedAt,
+      lastRunFinishedAt: new Date().toISOString(),
+      lastSuccessAt: new Date().toISOString(),
+      summary: { season: chosenSeason, type: "race-sync", ...summary }
+    });
     return res.json({ message: "Jolpica sync completed", ...summary });
   } catch (error) {
     console.error("Jolpica sync failed", error);
+    await setJolpicaSyncStatus({
+      isRunning: false,
+      lastMode: "manual-race-sync",
+      lastRunStartedAt: startedAt,
+      lastRunFinishedAt: new Date().toISOString(),
+      lastErrorAt: new Date().toISOString(),
+      lastErrorMessage: error.message,
+      summary: null
+    });
     return res.status(502).json({ error: "Failed to sync with Jolpica API" });
   }
 });
 
 router.post("/sync/jolpica/latest-results", async (req, res) => {
+  const startedAt = new Date().toISOString();
   try {
     const { leagueId, season } = req.body;
     if (!leagueId) {
@@ -547,12 +576,85 @@ router.post("/sync/jolpica/latest-results", async (req, res) => {
     const league = await League.findById(leagueId).lean().exec();
     if (!league) return res.status(404).json({ error: 'League not found' });
 
+    await setJolpicaSyncStatus({
+      isRunning: true,
+      lastMode: "manual-latest-results",
+      lastRunStartedAt: startedAt,
+      lastErrorMessage: ""
+    });
+
     const summary = await syncLatestRaceResultsFromJolpica({ leagueId, season });
+    await setJolpicaSyncStatus({
+      isRunning: false,
+      lastMode: "manual-latest-results",
+      lastRunStartedAt: startedAt,
+      lastRunFinishedAt: new Date().toISOString(),
+      lastSuccessAt: new Date().toISOString(),
+      summary: { season: Number(season || new Date().getUTCFullYear()), type: "latest-results", ...summary }
+    });
     return res.json({ message: "Latest race result sync completed", ...summary });
   } catch (error) {
     console.error("Latest result sync failed", error);
+    await setJolpicaSyncStatus({
+      isRunning: false,
+      lastMode: "manual-latest-results",
+      lastRunStartedAt: startedAt,
+      lastRunFinishedAt: new Date().toISOString(),
+      lastErrorAt: new Date().toISOString(),
+      lastErrorMessage: error.message,
+      summary: null
+    });
     return res.status(502).json({ error: "Failed to sync latest results from Jolpica API" });
   }
+});
+
+router.post("/sync/jolpica/completed-results", async (req, res) => {
+  const startedAt = new Date().toISOString();
+  try {
+    const chosenSeason = Number(req.body?.season || new Date().getUTCFullYear());
+    if (!Number.isInteger(chosenSeason) || chosenSeason < 1950 || chosenSeason > 2100) {
+      return res.status(400).json({ error: "Invalid season" });
+    }
+
+    await setJolpicaSyncStatus({
+      isRunning: true,
+      lastMode: "manual-completed-results",
+      lastRunStartedAt: startedAt,
+      lastErrorMessage: ""
+    });
+
+    const summary = await syncCompletedRaceResultsFromJolpica({ season: chosenSeason });
+    await setJolpicaSyncStatus({
+      isRunning: false,
+      lastMode: "manual-completed-results",
+      lastRunStartedAt: startedAt,
+      lastRunFinishedAt: new Date().toISOString(),
+      lastSuccessAt: new Date().toISOString(),
+      summary: { season: chosenSeason, type: "completed-results", ...summary }
+    });
+    return res.json({ message: "Completed race result sync finished", ...summary });
+  } catch (error) {
+    console.error("Completed result sync failed", error);
+    await setJolpicaSyncStatus({
+      isRunning: false,
+      lastMode: "manual-completed-results",
+      lastRunStartedAt: startedAt,
+      lastRunFinishedAt: new Date().toISOString(),
+      lastErrorAt: new Date().toISOString(),
+      lastErrorMessage: error.message,
+      summary: null
+    });
+    return res.status(502).json({ error: "Failed to sync completed race results from Jolpica API" });
+  }
+});
+
+router.get("/sync/jolpica/status", async (_req, res) => {
+  const persisted = await getJolpicaSyncStatus();
+  const runtime = getJolpicaAutoSyncRuntimeStatus();
+  return res.json({
+    runtime,
+    persisted
+  });
 });
 
 router.post("/races", async (req, res) => {
