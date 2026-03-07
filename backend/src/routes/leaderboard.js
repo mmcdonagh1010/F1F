@@ -12,7 +12,12 @@ import mongoose from "mongoose";
 
 const router = express.Router();
 
-async function getUserLeagues(userId) {
+async function getUserLeagues(userId, role = "player") {
+  if (role === "admin") {
+    const leagues = await League.find({}).sort({ name: 1 }).lean().exec();
+    return leagues.map((league) => ({ id: String(league._id), name: league.name }));
+  }
+
   const members = await LeagueMember.find({ user: userId }).populate('league', 'name').sort({ 'league.name': 1 }).lean().exec();
   return members.map((m) => ({ id: String(m.league._id), name: m.league.name }));
 }
@@ -21,7 +26,11 @@ function resolveLeagueId(userLeagues, requestedLeagueId) {
   if (!userLeagues || userLeagues.length === 0) return null;
   const ids = userLeagues.map((league) => league.id);
   if (!requestedLeagueId) return ids[0];
-  return ids.includes(requestedLeagueId) ? requestedLeagueId : null;
+  return ids.includes(requestedLeagueId) ? requestedLeagueId : ids[0];
+}
+
+function toObjectIdIfValid(value) {
+  return mongoose.Types.ObjectId.isValid(value) ? new mongoose.Types.ObjectId(value) : value;
 }
 
 function parsePositionCategoryMeta(categoryName) {
@@ -80,7 +89,7 @@ router.get("/season", authRequired, async (req, res) => {
   }
 
   const requestedLeagueId = String(req.query.leagueId || "").trim() || null;
-  const userLeagues = await getUserLeagues(req.user.id);
+  const userLeagues = await getUserLeagues(req.user.id, req.user.role);
   if (userLeagues.length === 0) {
     return res.status(403).json({ error: "You are not a member of any league" });
   }
@@ -89,11 +98,12 @@ router.get("/season", authRequired, async (req, res) => {
   if (!leagueId) {
     return res.status(403).json({ error: "You are not a member of the selected league" });
   }
+  const leagueObjectId = toObjectIdIfValid(leagueId);
 
   const races = await Race.find({ leagues: leagueId, race_date: { $gte: new Date(`${year}-01-01`), $lte: new Date(`${year}-12-31`) } }).sort({ race_date: 1 }).select('name race_date').lean().exec();
   const availableYearsRes = await Race.aggregate([
     { $unwind: "$leagues" },
-    { $match: { leagues: leagueId } },
+    { $match: { leagues: leagueObjectId } },
     { $project: { year: { $year: "$race_date" } } },
     { $group: { _id: "$year" } },
     { $sort: { _id: -1 } }
@@ -136,7 +146,7 @@ router.get("/latest", authRequired, async (req, res) => {
   }
 
   const requestedLeagueId = String(req.query.leagueId || "").trim() || null;
-  const userLeagues = await getUserLeagues(req.user.id);
+  const userLeagues = await getUserLeagues(req.user.id, req.user.role);
   if (userLeagues.length === 0) {
     return res.status(403).json({ error: "You are not a member of any league" });
   }
@@ -145,6 +155,7 @@ router.get("/latest", authRequired, async (req, res) => {
   if (!leagueId) {
     return res.status(403).json({ error: "You are not a member of the selected league" });
   }
+  const leagueObjectId = toObjectIdIfValid(leagueId);
 
   const latestRace = await Race.findOne({ leagues: leagueId, race_date: { $gte: new Date(`${year}-01-01`), $lte: new Date(`${year}-12-31`) } }).where('_id').ne(null).sort({ race_date: -1 }).lean().exec();
   if (!latestRace) return res.json({ year, leagueId, availableLeagues: userLeagues, latestRace: null, categories: [], rows: [] });
@@ -155,7 +166,7 @@ router.get("/latest", authRequired, async (req, res) => {
   const results = await Result.find({ race: latestRace._id }).lean().exec();
 
   const overallDocs = await Score.aggregate([
-    { $match: { league: leagueId } },
+    { $match: { league: leagueObjectId } },
     { $lookup: { from: 'races', localField: 'race', foreignField: '_id', as: 'race' } },
     { $unwind: '$race' },
     { $match: { 'race.race_date': { $gte: new Date(`${year}-01-01`), $lte: new Date(`${year}-12-31`) } } },
@@ -203,7 +214,7 @@ router.get("/season/player/:userId", authRequired, async (req, res) => {
   }
 
   const requestedLeagueId = String(req.query.leagueId || "").trim() || null;
-  const userLeagues = await getUserLeagues(req.user.id);
+  const userLeagues = await getUserLeagues(req.user.id, req.user.role);
   if (userLeagues.length === 0) {
     return res.status(403).json({ error: "You are not a member of any league" });
   }
@@ -327,7 +338,7 @@ router.get("/season/player/:userId", authRequired, async (req, res) => {
 router.get("/race/:raceId", authRequired, async (req, res) => {
   const { raceId } = req.params;
   const requestedLeagueId = String(req.query.leagueId || "").trim() || null;
-  const userLeagues = await getUserLeagues(req.user.id);
+  const userLeagues = await getUserLeagues(req.user.id, req.user.role);
   if (userLeagues.length === 0) {
     return res.status(403).json({ error: "You are not a member of any league" });
   }

@@ -1,9 +1,30 @@
 import { clearAuthSession, getStoredToken } from "./auth";
 
 const isDebug = process.env.NEXT_PUBLIC_DEBUG === "true" || process.env.NODE_ENV !== "production";
-const API_BASE = isDebug
+export const API_BASE = isDebug
   ? process.env.NEXT_PUBLIC_API_BASE_DEBUG || process.env.NEXT_PUBLIC_API_BASE || "http://localhost:4000/api"
   : process.env.NEXT_PUBLIC_API_BASE_PROD || process.env.NEXT_PUBLIC_API_BASE || "http://localhost:4000/api";
+
+export async function publicApiFetch(path, options = {}) {
+  const headers = {
+    "Content-Type": "application/json",
+    ...(options.headers || {})
+  };
+
+  const res = await fetch(`${API_BASE}${path}`, {
+    ...options,
+    headers,
+    credentials: "include",
+    cache: "no-store"
+  });
+
+  if (!res.ok) {
+    const payload = await res.json().catch(() => ({ error: "Request failed" }));
+    throw new Error(payload.error || "Request failed");
+  }
+
+  return res.json();
+}
 
 export async function apiFetch(path, options = {}) {
   const token = getStoredToken();

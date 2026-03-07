@@ -2,6 +2,18 @@ import dotenv from "dotenv";
 
 dotenv.config();
 
+function normalizeJwtExpiresIn(value) {
+  const normalized = String(value || "").trim();
+  if (!normalized) return "7d";
+
+  // jsonwebtoken treats a bare numeric string as milliseconds; treat it as seconds instead.
+  if (/^\d+$/.test(normalized)) {
+    return Number(normalized);
+  }
+
+  return normalized;
+}
+
 function normalizeOrigin(value) {
   const normalized = String(value || "").trim();
   if (!normalized) return "";
@@ -54,7 +66,7 @@ export const config = {
   debug,
   databaseUrl: process.env.DATABASE_URL,
   jwtSecret: process.env.JWT_SECRET || "dev_secret",
-  jwtExpiresIn: process.env.JWT_EXPIRES_IN || "7d",
+  jwtExpiresIn: normalizeJwtExpiresIn(process.env.JWT_EXPIRES_IN),
   mongodbUri: process.env.MONGODB_URI || process.env.MONGO_URI || "",
   frontendUrlDebug,
   frontendUrlProduction: frontendUrlProd,
@@ -64,5 +76,8 @@ export const config = {
   frontendUrl: debug ? frontendUrlDebug : frontendUrlProd,
   backendUrl: debug ? backendUrlDebug : backendUrlProd,
   bootstrapAdminKey: process.env.BOOTSTRAP_ADMIN_KEY || "",
-  pickLockMinutesBeforeDeadline: Number(process.env.PICK_LOCK_MINUTES_BEFORE_DEADLINE || 30)
+  pickLockMinutesBeforeDeadline: Number(process.env.PICK_LOCK_MINUTES_BEFORE_DEADLINE || 30),
+  jolpicaAutoSyncEnabled: process.env.JOLPICA_AUTO_SYNC_ENABLED !== "false",
+  jolpicaAutoSyncIntervalMs: Math.max(60_000, Number(process.env.JOLPICA_AUTO_SYNC_INTERVAL_MS || 15 * 60 * 1000)),
+  jolpicaAutoSyncSeason: Number(process.env.JOLPICA_AUTO_SYNC_SEASON || new Date().getUTCFullYear())
 };

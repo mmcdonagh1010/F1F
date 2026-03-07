@@ -291,6 +291,7 @@ export default function AdminPage() {
 
   const [syncSeason, setSyncSeason] = useState(String(currentYear));
   const [syncMessage, setSyncMessage] = useState("");
+  const [syncStatus, setSyncStatus] = useState(null);
 
   const [selectedDriverRaceId, setSelectedDriverRaceId] = useState("");
   const [driverRows, setDriverRows] = useState([]);
@@ -372,6 +373,16 @@ export default function AdminPage() {
     }
   }
 
+  async function loadSyncStatus() {
+    try {
+      const data = await apiFetch("/admin/sync/jolpica/status");
+      setSyncStatus(data);
+    } catch (err) {
+      setSyncMessage(err.message);
+      setSyncStatus(null);
+    }
+  }
+
   async function loadLeagueMembers(leagueId) {
     if (!leagueId) return;
     try {
@@ -417,7 +428,14 @@ export default function AdminPage() {
     loadRaces();
     loadLeagues();
     loadLockSetting();
+    loadSyncStatus();
   }, [isRoleResolved]);
+
+  useEffect(() => {
+    if (!isRoleResolved) return;
+    if (activeTab !== "sync") return;
+    loadSyncStatus();
+  }, [activeTab, isRoleResolved]);
 
   useEffect(() => {
     if (!isRoleResolved) return;
@@ -738,6 +756,7 @@ export default function AdminPage() {
         `Race sync done: created ${res.created}, updated ${res.updated}, drivers/race ${res.driversPerRace}${skippedNote}`
       );
       await loadRaces();
+      await loadSyncStatus();
     } catch (err) {
       setSyncMessage(err.message);
     }
@@ -763,6 +782,24 @@ export default function AdminPage() {
       } else {
         setSyncMessage(res.reason || "No updates were applied.");
       }
+      await loadSyncStatus();
+    } catch (err) {
+      setSyncMessage(err.message);
+    }
+  }
+
+  async function syncCompletedResults() {
+    setSyncMessage("");
+
+    try {
+      const res = await apiFetch("/admin/sync/jolpica/completed-results", {
+        method: "POST",
+        body: JSON.stringify({ season: Number(syncSeason) })
+      });
+      setSyncMessage(
+        `Completed-result sync done: updated ${res.updatedRaces} race(s), applied ${res.updatedResults} result entries, skipped ${res.skipped?.length || 0}.`
+      );
+      await loadSyncStatus();
     } catch (err) {
       setSyncMessage(err.message);
     }
@@ -1506,6 +1543,26 @@ raceId,driverName,teamName
         <section className="card space-y-3 p-4 text-sm text-slate-200">
           <h2 className="font-display text-2xl text-accent-cyan">Sync From Jolpica API</h2>
           <p>Race calendar and drivers can be pulled automatically by season.</p>
+          {syncStatus ? (
+            <div className="rounded-xl border border-white/20 bg-white/5 p-3 text-xs text-slate-300">
+              <p className="font-semibold text-slate-100">Scheduled Sync Status</p>
+              <p className="mt-1">Enabled: {syncStatus.runtime?.enabled ? "Yes" : "No"}</p>
+              <p>Running: {syncStatus.runtime?.isRunning || syncStatus.persisted?.isRunning ? "Yes" : "No"}</p>
+              <p>Interval: {Math.round((syncStatus.runtime?.intervalMs || 0) / 60000)} minutes</p>
+              <p>Configured season: {syncStatus.runtime?.configuredSeason || "-"}</p>
+              <p className="mt-2">Last mode: {syncStatus.persisted?.lastMode || "-"}</p>
+              <p>Last started: {syncStatus.persisted?.lastRunStartedAt ? new Date(syncStatus.persisted.lastRunStartedAt).toLocaleString() : "-"}</p>
+              <p>Last finished: {syncStatus.persisted?.lastRunFinishedAt ? new Date(syncStatus.persisted.lastRunFinishedAt).toLocaleString() : "-"}</p>
+              <p>Last success: {syncStatus.persisted?.lastSuccessAt ? new Date(syncStatus.persisted.lastSuccessAt).toLocaleString() : "-"}</p>
+              <p>Last error: {syncStatus.persisted?.lastErrorAt ? new Date(syncStatus.persisted.lastErrorAt).toLocaleString() : "-"}</p>
+              {syncStatus.persisted?.lastErrorMessage ? (
+                <p className="mt-1 text-red-300">Error: {syncStatus.persisted.lastErrorMessage}</p>
+              ) : null}
+              {syncStatus.persisted?.summary ? (
+                <pre className="mt-2 overflow-x-auto rounded bg-track-900/70 p-2 text-[11px] text-slate-300">{JSON.stringify(syncStatus.persisted.summary, null, 2)}</pre>
+              ) : null}
+            </div>
+          ) : null}
           <label className="flex items-center gap-2 text-sm text-slate-200">
             <input
               type="checkbox"
@@ -1537,6 +1594,12 @@ raceId,driverName,teamName
             </button>
             <button type="button" className="tap rounded-xl border border-white/30 px-4 py-2 font-bold text-slate-100" onClick={syncLatestResults}>
               Sync Latest Results
+            </button>
+            <button type="button" className="tap rounded-xl border border-white/30 px-4 py-2 font-bold text-slate-100" onClick={syncCompletedResults}>
+              Sync Completed Results
+            </button>
+            <button type="button" className="tap rounded-xl border border-white/30 px-4 py-2 font-bold text-slate-100" onClick={loadSyncStatus}>
+              Refresh Status
             </button>
           </div>
           {syncMessage ? <p className="text-accent-gold">{syncMessage}</p> : null}

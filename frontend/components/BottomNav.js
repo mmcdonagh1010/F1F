@@ -7,6 +7,7 @@ import { clearAuthSession, getStoredUser } from "../lib/auth";
 
 const items = [
   { href: "/dashboard", label: "Predictions" },
+  { href: "/live", label: "Live F1" },
   { href: "/leaderboard", label: "Leaderboard" },
   { href: "/admin", label: "Admin", adminOnly: true }
 ];
