@@ -1,4 +1,5 @@
 import "./globals.css";
+import ServiceWorkerReset from "../components/ServiceWorkerReset";
 
 export const metadata = {
   title: "Fantasy F1 League",
@@ -10,6 +11,7 @@ export default function RootLayout({ children }) {
   return (
     <html lang="en">
       <body>
+        <ServiceWorkerReset />
         <main>{children}</main>
       </body>
     </html>
