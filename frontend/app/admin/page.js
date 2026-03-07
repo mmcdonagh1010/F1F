@@ -212,8 +212,18 @@ function mapCategoryNameToOptionKey(categoryName) {
   if (normalized.includes("sprint result winner")) return "sprintResult";
   if (normalized.includes("driver of the weekend")) return "driverOfWeekend";
   if (normalized.includes("team of the weekend")) return "teamOfWeekend";
+  if (normalized.includes("team battle") && normalized.includes("driver")) return "teamOfWeekend";
+  if (normalized.includes("team battle") && normalized.includes("margin")) return "teamOfWeekend";
   if (normalized.includes("fastest lap driver")) return "fastestLapDriver";
   return null;
+}
+
+function getDriverOfWeekendScopeLabel(scope) {
+  if (scope === "race-result") return "Race Result";
+  if (scope === "sprint-result") return "Sprint Result";
+  if (scope === "race-qualification") return "Race Qualification";
+  if (scope === "sprint-qualification") return "Sprint Qualification";
+  return "Weekend Position";
 }
 
 function formatDateTimeLocal(value) {
@@ -294,6 +304,7 @@ export default function AdminPage() {
   const [syncStatus, setSyncStatus] = useState(null);
 
   const [selectedDriverRaceId, setSelectedDriverRaceId] = useState("");
+  const [driverYear, setDriverYear] = useState(String(currentYear));
   const [driverRows, setDriverRows] = useState([]);
   const [driverMessage, setDriverMessage] = useState("");
 
@@ -330,6 +341,12 @@ export default function AdminPage() {
     return Array.from(years).sort((a, b) => b - a);
   }, [allRaces, currentYear]);
 
+  const selectableDriverRaces = useMemo(() => {
+    return allRaces
+      .filter((raceRow) => new Date(raceRow.race_date).getUTCFullYear() === Number(driverYear))
+      .sort((a, b) => new Date(a.race_date).getTime() - new Date(b.race_date).getTime());
+  }, [allRaces, driverYear]);
+
   const selectablePredictionRaces = useMemo(() => {
     const now = Date.now();
     return allRaces
@@ -343,9 +360,6 @@ export default function AdminPage() {
     try {
       const data = await apiFetch("/races");
       setAllRaces(data);
-      if (!selectedDriverRaceId && data[0]?.id) {
-        setSelectedDriverRaceId(data[0].id);
-      }
     } catch {
       setAllRaces([]);
     }
@@ -423,11 +437,20 @@ export default function AdminPage() {
       const sprintSlots = [];
       const raceQualificationSlots = [];
       const sprintQualificationSlots = [];
+      let configuredTeamOfWeekend = "";
+      let configuredDriverOfWeekend = "";
 
       (detail.categories || []).forEach((category) => {
         const optionKey = mapCategoryNameToOptionKey(category.name);
         if (!optionKey) return;
         selected.add(optionKey);
+
+        if (!configuredTeamOfWeekend && category?.metadata?.fixedTeam) {
+          configuredTeamOfWeekend = String(category.metadata.fixedTeam).trim();
+        }
+        if (!configuredDriverOfWeekend && category?.metadata?.fixedDriver) {
+          configuredDriverOfWeekend = String(category.metadata.fixedDriver).trim();
+        }
 
         if (!pointsByOption[optionKey]) {
           pointsByOption[optionKey] = {
@@ -456,6 +479,11 @@ export default function AdminPage() {
       if (sprintQualificationSlots.length > 0) {
         setSprintQualificationSlotsInput(sprintQualificationSlots.sort((a, b) => a - b).join(","));
       }
+      setPredictionPreview((prev) => ({
+        ...prev,
+        teamOfWeekend: configuredTeamOfWeekend,
+        driverOfWeekend: configuredDriverOfWeekend
+      }));
 
       const hasSprint = Array.from(selected).some((key) =>
         ["sprintQualificationPositions", "sprintResult", "sprintPositions"].includes(key)
@@ -522,6 +550,19 @@ export default function AdminPage() {
       loadDriversForRace(selectedDriverRaceId);
     }
   }, [selectedDriverRaceId, isRoleResolved]);
+
+  useEffect(() => {
+    if (!isRoleResolved) return;
+    if (selectableDriverRaces.length === 0) {
+      setSelectedDriverRaceId("");
+      setDriverRows([{ name: "", teamName: "" }]);
+      return;
+    }
+
+    if (!selectableDriverRaces.find((raceRow) => raceRow.id === selectedDriverRaceId)) {
+      setSelectedDriverRaceId(selectableDriverRaces[0].id);
+    }
+  }, [driverYear, isRoleResolved, selectableDriverRaces, selectedDriverRaceId]);
 
   useEffect(() => {
     if (!isRoleResolved) return;
@@ -887,6 +928,30 @@ export default function AdminPage() {
     const sprintQualificationSlots = parseCsvLikeList(sprintQualificationSlotsInput)
       .map((value) => Number(value))
       .filter((value) => Number.isInteger(value) && value > 0);
+    const fixedTeamOfWeekend = String(predictionPreview.teamOfWeekend || "").trim();
+    const fixedDriverOfWeekend = String(predictionPreview.driverOfWeekend || "").trim();
+
+    if (selectedOptions.includes("teamOfWeekend") && !fixedTeamOfWeekend) {
+      setPredictionMessage("Select the fixed team for Team of the Weekend.");
+      return;
+    }
+
+    if (selectedOptions.includes("driverOfWeekend") && !fixedDriverOfWeekend) {
+      setPredictionMessage("Select the fixed driver for Driver of the Weekend.");
+      return;
+    }
+
+    const driverOfWeekendScopes = [
+      selectedOptions.includes("racePositions") ? "race-result" : null,
+      selectedOptions.includes("sprintPositions") ? "sprint-result" : null,
+      selectedOptions.includes("raceQualificationPositions") ? "race-qualification" : null,
+      selectedOptions.includes("sprintQualificationPositions") ? "sprint-qualification" : null
+    ].filter(Boolean);
+
+    if (selectedOptions.includes("driverOfWeekend") && driverOfWeekendScopes.length === 0) {
+      setPredictionMessage("Driver of the Weekend needs at least one selected position group to inherit from.");
+      return;
+    }
 
     const categories = [];
     let displayOrder = 1;
@@ -947,6 +1012,43 @@ export default function AdminPage() {
             name: `Sprint Qualification P${slot}`,
             displayOrder: displayOrder++,
             isPositionBased: true,
+            exactPoints,
+            partialPoints
+          });
+        });
+        return;
+      }
+
+      if (optionKey === "teamOfWeekend") {
+        categories.push({
+          name: "Team Battle Winner (Driver)",
+          displayOrder: displayOrder++,
+          isPositionBased: false,
+          metadata: { fixedTeam: fixedTeamOfWeekend },
+          exactPoints,
+          partialPoints
+        });
+        categories.push({
+          name: "Team Battle Winning Margin",
+          displayOrder: displayOrder++,
+          isPositionBased: false,
+          metadata: { fixedTeam: fixedTeamOfWeekend },
+          exactPoints,
+          partialPoints
+        });
+        return;
+      }
+
+      if (optionKey === "driverOfWeekend") {
+        driverOfWeekendScopes.forEach((scope) => {
+          categories.push({
+            name: `Driver of the Weekend ${getDriverOfWeekendScopeLabel(scope)} Position`,
+            displayOrder: displayOrder++,
+            isPositionBased: false,
+            metadata: {
+              fixedDriver: fixedDriverOfWeekend,
+              driverOfWeekendScope: scope
+            },
             exactPoints,
             partialPoints
           });
@@ -1229,37 +1331,43 @@ export default function AdminPage() {
                       </label>
 
                       {selectedOptions.includes(option.key) && option.key === "driverOfWeekend" ? (
-                        <select
-                          className="w-full rounded-xl border border-white/20 bg-white/10 px-2 py-1 text-xs text-white md:w-[320px]"
-                          value={predictionPreview.driverOfWeekend}
-                          onChange={(e) =>
-                            setPredictionPreview((prev) => ({ ...prev, driverOfWeekend: e.target.value }))
-                          }
-                        >
-                          <option value="" className="bg-track-900 text-slate-300">Select driver</option>
-                          {availableRaceDrivers.map((driver) => (
-                            <option key={`dow-${driver.name}`} value={driver.name} className="bg-track-900 text-white">
-                              {driver.teamName ? `${driver.name} (${driver.teamName})` : driver.name}
-                            </option>
-                          ))}
-                        </select>
+                        <div className="w-full md:w-[320px]">
+                          <select
+                            className="w-full rounded-xl border border-white/20 bg-white/10 px-2 py-1 text-xs text-white"
+                            value={predictionPreview.driverOfWeekend}
+                            onChange={(e) =>
+                              setPredictionPreview((prev) => ({ ...prev, driverOfWeekend: e.target.value }))
+                            }
+                          >
+                            <option value="" className="bg-track-900 text-slate-300">Select fixed driver</option>
+                            {availableRaceDrivers.map((driver) => (
+                              <option key={`dow-${driver.name}`} value={driver.name} className="bg-track-900 text-white">
+                                {driver.teamName ? `${driver.name} (${driver.teamName})` : driver.name}
+                              </option>
+                            ))}
+                          </select>
+                          <p className="mt-1 text-[11px] text-slate-400">Players will predict this driver's finishing position for each enabled position group.</p>
+                        </div>
                       ) : null}
 
                       {selectedOptions.includes(option.key) && option.key === "teamOfWeekend" ? (
-                        <select
-                          className="w-full rounded-xl border border-white/20 bg-white/10 px-2 py-1 text-xs text-white md:w-[320px]"
-                          value={predictionPreview.teamOfWeekend}
-                          onChange={(e) =>
-                            setPredictionPreview((prev) => ({ ...prev, teamOfWeekend: e.target.value }))
-                          }
-                        >
-                          <option value="" className="bg-track-900 text-slate-300">Select team</option>
-                          {availableRaceTeams.map((team) => (
-                            <option key={`tow-${team}`} value={team} className="bg-track-900 text-white">
-                              {team}
-                            </option>
-                          ))}
-                        </select>
+                        <div className="w-full md:w-[320px]">
+                          <select
+                            className="w-full rounded-xl border border-white/20 bg-white/10 px-2 py-1 text-xs text-white"
+                            value={predictionPreview.teamOfWeekend}
+                            onChange={(e) =>
+                              setPredictionPreview((prev) => ({ ...prev, teamOfWeekend: e.target.value }))
+                            }
+                          >
+                            <option value="" className="bg-track-900 text-slate-300">Select fixed team</option>
+                            {availableRaceTeams.map((team) => (
+                              <option key={`tow-${team}`} value={team} className="bg-track-900 text-white">
+                                {team}
+                              </option>
+                            ))}
+                          </select>
+                          <p className="mt-1 text-[11px] text-slate-400">Players will only pick the team driver and the gap for this team.</p>
+                        </div>
                       ) : null}
 
                       {selectedOptions.includes(option.key) && option.key === "racePositions" ? (
@@ -1482,17 +1590,32 @@ leagueId,leagueIds,applyToAllLeagues,name,circuitName,externalRound,raceDate,dea
       {activeTab === "drivers" ? (
         <section className="card space-y-3 p-4 text-sm text-slate-200">
           <h2 className="font-display text-2xl text-accent-cyan">Manage Drivers</h2>
+          <label className="block text-sm text-slate-200">
+            <span className="mb-1 block font-semibold text-accent-cyan">Year</span>
+            <select
+              className="tap w-full rounded-xl border border-white/30 bg-white/10 px-3 text-white"
+              value={driverYear}
+              onChange={(e) => setDriverYear(e.target.value)}
+            >
+              {predictionYearOptions.map((year) => (
+                <option key={`driver-year-${year}`} value={String(year)} className="bg-track-900 text-white">
+                  {year}
+                </option>
+              ))}
+            </select>
+          </label>
           <select
             className="tap w-full rounded-xl border border-white/30 bg-white/10 px-3 text-white"
             value={selectedDriverRaceId}
             onChange={(e) => setSelectedDriverRaceId(e.target.value)}
           >
-            {allRaces.map((raceRow) => (
+            {selectableDriverRaces.map((raceRow) => (
               <option key={raceRow.id} value={raceRow.id} className="bg-track-900 text-white">
-                {raceRow.name}
+                {raceRow.name} - {new Date(raceRow.race_date).toLocaleDateString()}
               </option>
             ))}
           </select>
+          {selectableDriverRaces.length === 0 ? <p className="text-xs text-slate-400">No races found for the selected year.</p> : null}
 
           <div className="space-y-2">
             {driverRows.map((driver, index) => (

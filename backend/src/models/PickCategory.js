@@ -7,6 +7,7 @@ const PickCategorySchema = new Schema({
   name: { type: String, required: true },
   display_order: { type: Number },
   is_position_based: { type: Boolean, default: false },
+  metadata: { type: Schema.Types.Mixed, default: {} },
   exact_points: { type: Number, default: 0 },
   partial_points: { type: Number, default: 0 },
   created_at: { type: Date, default: Date.now }
