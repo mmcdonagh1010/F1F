@@ -19,6 +19,14 @@ function parsePositionCategoryMeta(categoryName) {
   };
 }
 
+function getDriverOfWeekendScope(category) {
+  return String(category?.metadata?.driverOfWeekendScope || "").trim();
+}
+
+function isDriverOfWeekendCategory(category) {
+  return String(category?.name || "").toLowerCase().includes("driver of the weekend");
+}
+
 export async function calculateRaceScores(raceId, targetLeagueId = null) {
   const categories = await PickCategory.find({ race: raceId }).sort({ display_order: 1 }).lean().exec();
   const results = await Result.find({ race: raceId }).lean().exec();
@@ -66,6 +74,10 @@ export async function calculateRaceScores(raceId, targetLeagueId = null) {
           const distance = Math.abs(actualPosition - meta.position);
           earned = Math.max(0, Number(category.exact_points || 0) - distance * step);
         }
+      } else if (isDriverOfWeekendCategory(category) && pick.value_number !== null && official.value_number !== null) {
+        const step = Math.max(1, Number(category.partial_points) || 1);
+        const distance = Math.abs(Number(official.value_number) - Number(pick.value_number));
+        earned = Math.max(0, Number(category.exact_points || 0) - distance * step);
       }
     }
 

@@ -103,6 +103,17 @@ function buildPositionMap(items, accessor) {
   return map;
 }
 
+function buildDriverPositionMap(items) {
+  const map = new Map();
+  (items || []).forEach((item) => {
+    const position = Number(item?.position);
+    const driverName = getFullDriverName(item?.Driver);
+    if (!Number.isInteger(position) || !driverName) return;
+    map.set(driverName.toLowerCase(), position);
+  });
+  return map;
+}
+
 function findFastestLapDriver(results) {
   const ranked = (results || [])
     .filter((row) => Number(row?.FastestLap?.rank) > 0)
@@ -123,10 +134,39 @@ function findTopTeamByPoints(results) {
     .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0]?.[0] || null;
 }
 
+function findTeamBattleOutcome(results, teamName) {
+  if (!teamName) return { winningDriver: null, marginBand: null };
+
+  const teamResults = (results || [])
+    .filter((row) => String(row?.Constructor?.name || "").trim().toLowerCase() === String(teamName).trim().toLowerCase())
+    .map((row) => ({
+      position: Number(row?.position),
+      driverName: getFullDriverName(row?.Driver)
+    }))
+    .filter((row) => Number.isInteger(row.position) && row.position > 0 && row.driverName)
+    .sort((a, b) => a.position - b.position || a.driverName.localeCompare(b.driverName));
+
+  if (teamResults.length === 0) {
+    return { winningDriver: null, marginBand: null };
+  }
+
+  const winningDriver = teamResults[0].driverName;
+  if (teamResults.length < 2) {
+    return { winningDriver, marginBand: null };
+  }
+
+  const gap = Math.abs(teamResults[1].position - teamResults[0].position);
+  const marginBand = gap <= 2 ? "1-2" : gap <= 4 ? "3-4" : "5+";
+  return { winningDriver, marginBand };
+}
+
 function buildOfficialResultsByCategory({ categories, qualifyingResults, sprintResults, raceResults }) {
   const qualifyingMap = buildPositionMap(qualifyingResults, (row) => getFullDriverName(row?.Driver));
   const sprintMap = buildPositionMap(sprintResults, (row) => getFullDriverName(row?.Driver));
   const raceMap = buildPositionMap(raceResults, (row) => getFullDriverName(row?.Driver));
+  const qualifyingDriverPositions = buildDriverPositionMap(qualifyingResults);
+  const sprintDriverPositions = buildDriverPositionMap(sprintResults);
+  const raceDriverPositions = buildDriverPositionMap(raceResults);
   const raceWinner = raceMap.get(1) || null;
   const fastestLapDriver = findFastestLapDriver(raceResults);
   const teamOfWeekend = findTopTeamByPoints(raceResults);
@@ -134,6 +174,11 @@ function buildOfficialResultsByCategory({ categories, qualifyingResults, sprintR
   return categories
     .map((category) => {
       let valueText = null;
+      let valueNumber = null;
+      const fixedTeam = String(category?.metadata?.fixedTeam || "").trim();
+      const teamBattleOutcome = findTeamBattleOutcome(raceResults, fixedTeam || teamOfWeekend);
+      const fixedDriver = String(category?.metadata?.fixedDriver || "").trim().toLowerCase();
+      const driverOfWeekendScope = String(category?.metadata?.driverOfWeekendScope || "").trim();
 
       if (/^race qualification p\d+$/i.test(category.name)) {
         const position = Number(category.name.match(/p(\d+)/i)?.[1] || 0);
@@ -144,22 +189,30 @@ function buildOfficialResultsByCategory({ categories, qualifyingResults, sprintR
       } else if (/^race result p\d+$/i.test(category.name)) {
         const position = Number(category.name.match(/p(\d+)/i)?.[1] || 0);
         valueText = raceMap.get(position) || null;
-      } else if (category.name === "Driver of the Weekend") {
-        valueText = raceWinner;
+      } else if (String(category.name || "").toLowerCase().includes("driver of the weekend") && fixedDriver) {
+        if (driverOfWeekendScope === "race-result") valueNumber = raceDriverPositions.get(fixedDriver) ?? null;
+        else if (driverOfWeekendScope === "sprint-result") valueNumber = sprintDriverPositions.get(fixedDriver) ?? null;
+        else if (driverOfWeekendScope === "race-qualification") valueNumber = qualifyingDriverPositions.get(fixedDriver) ?? null;
+        else if (driverOfWeekendScope === "sprint-qualification") valueNumber = qualifyingDriverPositions.get(fixedDriver) ?? null;
+        else valueNumber = raceDriverPositions.get(fixedDriver) ?? null;
       } else if (category.name === "Fastest Lap Driver") {
         valueText = fastestLapDriver;
       } else if (category.name === "Team of the Weekend") {
-        valueText = teamOfWeekend;
+        valueText = fixedTeam || teamOfWeekend;
+      } else if (/team battle/i.test(category.name) && /driver/i.test(category.name)) {
+        valueText = teamBattleOutcome.winningDriver;
+      } else if (/team battle/i.test(category.name) && /margin/i.test(category.name)) {
+        valueText = teamBattleOutcome.marginBand;
       }
 
       return {
         categoryId: String(category._id),
         categoryName: category.name,
         value_text: valueText,
-        value_number: null
+        value_number: valueNumber
       };
     })
-    .filter((row) => row.value_text);
+    .filter((row) => row.value_text || Number.isInteger(row.value_number));
 }
 
 function extractLatestRaceResults(payload) {

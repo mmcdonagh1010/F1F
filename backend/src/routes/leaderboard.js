@@ -49,6 +49,10 @@ function parsePositionCategoryMeta(categoryName) {
   };
 }
 
+function isDriverOfWeekendCategory(category) {
+  return String(category?.name || "").toLowerCase().includes("driver of the weekend");
+}
+
 function calculatePickPoints(category, pick, result, actualPositionByScopeAndDriver) {
   if (!pick || !result) return 0;
 
@@ -75,6 +79,12 @@ function calculatePickPoints(category, pick, result, actualPositionByScopeAndDri
       const distance = Math.abs(actualPosition - meta.position);
       return Math.max(0, Number(category.exact_points) - distance * step);
     }
+  }
+
+  if (isDriverOfWeekendCategory(category) && pick.value_number !== null && result.value_number !== null) {
+    const step = Math.max(1, Number(category.partial_points) || 1);
+    const distance = Math.abs(Number(result.value_number) - Number(pick.value_number));
+    return Math.max(0, Number(category.exact_points) - distance * step);
   }
 
   return 0;

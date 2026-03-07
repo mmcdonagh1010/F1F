@@ -10,6 +10,10 @@ function isTeamBattleMarginCategory(name) {
   return normalized.includes("team battle") && normalized.includes("margin");
 }
 
+function isDriverOfWeekendCategory(name) {
+  return String(name || "").toLowerCase().includes("driver of the weekend");
+}
+
 function isTeamOfWeekendCategory(name) {
   return String(name || "").toLowerCase().includes("team of the weekend");
 }
@@ -22,6 +26,7 @@ function isTeamBattleDriverCategory(name) {
 function isDriverSelectionCategory(category) {
   const normalized = category.name.toLowerCase();
   if (isTeamBattleMarginCategory(normalized)) return false;
+  if (isDriverOfWeekendCategory(normalized)) return false;
   if (category.is_position_based) return true;
   if (/\bp\d+\b/i.test(normalized)) return true;
 
@@ -30,7 +35,70 @@ function isDriverSelectionCategory(category) {
   );
 }
 
-function getResultInputMeta(category, drivers) {
+function isReferencedPositionCategory(category) {
+  const normalized = String(category?.name || "").toLowerCase();
+  if (!category) return false;
+  if (isDriverOfWeekendCategory(normalized)) return false;
+  if (isTeamOfWeekendCategory(normalized)) return false;
+  if (isTeamBattleDriverCategory(normalized) || isTeamBattleMarginCategory(normalized)) return false;
+  return Boolean(category.is_position_based) || /\bp\d+\b/i.test(normalized);
+}
+
+function getConfiguredTeamForCategory(category) {
+  return String(category?.metadata?.fixedTeam || "").trim();
+}
+
+function getDriverOfWeekendScope(category) {
+  return String(category?.metadata?.driverOfWeekendScope || "").trim();
+}
+
+function getDriverOfWeekendScopeLabel(scope) {
+  if (scope === "race-result") return "Race Result";
+  if (scope === "sprint-result") return "Sprint Result";
+  if (scope === "race-qualification") return "Race Qualification";
+  if (scope === "sprint-qualification") return "Sprint Qualification";
+  return "Weekend Position";
+}
+
+function buildPositionNumberOptions() {
+  return Array.from({ length: 20 }, (_, index) => {
+    const value = String(index + 1);
+    return { value, label: value };
+  });
+}
+
+function buildSelectedPositionDriverOptions(categories, values, drivers, currentCategoryId) {
+  const driverMap = new Map(
+    (drivers || []).map((driver) => [
+      String(driver.driver_name || "").trim().toLowerCase(),
+      {
+        value: driver.driver_name,
+        label: driver.team_name ? `${driver.driver_name} (${driver.team_name})` : driver.driver_name
+      }
+    ])
+  );
+  const optionMap = new Map();
+
+  (categories || []).forEach((category) => {
+    if (!isReferencedPositionCategory(category)) return;
+
+    const selectedValue = String(values?.[category.id] || "").trim();
+    if (!selectedValue) return;
+
+    const option = driverMap.get(selectedValue.toLowerCase()) || { value: selectedValue, label: selectedValue };
+    optionMap.set(option.value.toLowerCase(), option);
+  });
+
+  const currentValue = String(values?.[currentCategoryId] || "").trim();
+  if (currentValue && !optionMap.has(currentValue.toLowerCase())) {
+    const option = driverMap.get(currentValue.toLowerCase()) || { value: currentValue, label: currentValue };
+    optionMap.set(option.value.toLowerCase(), option);
+  }
+
+  return Array.from(optionMap.values()).sort((a, b) => a.label.localeCompare(b.label));
+}
+
+function getResultInputMeta(category, drivers, categories, resultValues) {
   if (isTeamOfWeekendCategory(category.name)) {
     const teams = [...new Set((drivers || []).map((driver) => String(driver.team_name || "").trim()).filter(Boolean))];
     return {
@@ -41,15 +109,29 @@ function getResultInputMeta(category, drivers) {
     };
   }
 
+  if (isDriverOfWeekendCategory(category.name)) {
+    return {
+      type: "select",
+      placeholder: "Select position",
+      options: buildPositionNumberOptions(),
+      hint: `Enter the finishing position for ${String(category?.metadata?.fixedDriver || "the selected driver").trim()} in ${getDriverOfWeekendScopeLabel(getDriverOfWeekendScope(category))}.`
+    };
+  }
+
   if (isDriverSelectionCategory(category)) {
+    const configuredTeam = getConfiguredTeamForCategory(category);
     return {
       type: "select",
       placeholder: "Select driver",
-      options: (drivers || []).map((driver) => ({
-        value: driver.driver_name,
-        label: driver.team_name ? `${driver.driver_name} (${driver.team_name})` : driver.driver_name
-      })),
-      hint: "Driver must be selected from this race's configured drivers."
+      options: (drivers || [])
+        .filter((driver) => !configuredTeam || String(driver.team_name || "").trim() === configuredTeam)
+        .map((driver) => ({
+          value: driver.driver_name,
+          label: driver.team_name ? `${driver.driver_name} (${driver.team_name})` : driver.driver_name
+        })),
+      hint: configuredTeam
+        ? `Driver must be selected from ${configuredTeam}.`
+        : "Driver must be selected from this race's configured drivers."
     };
   }
 
@@ -121,8 +203,15 @@ export default function AdminResultsPage() {
     if (!raceDetail) return;
 
     const results = raceDetail.categories.map((category) => {
-      const meta = getResultInputMeta(category, raceDetail.drivers);
       const raw = (resultValues[category.id] || "").toString().trim();
+
+      if (isDriverOfWeekendCategory(category.name)) {
+        return {
+          categoryId: category.id,
+          valueText: null,
+          valueNumber: raw ? Number(raw) : null
+        };
+      }
 
       return {
         categoryId: category.id,
@@ -174,9 +263,9 @@ export default function AdminResultsPage() {
           ) : null}
 
           {raceDetail.categories.map((category) => {
-            const meta = getResultInputMeta(category, raceDetail.drivers);
+            const meta = getResultInputMeta(category, raceDetail.drivers, raceDetail.categories, resultValues);
             const teamOfWeekendCategory = raceDetail.categories.find((item) => isTeamOfWeekendCategory(item.name));
-            const selectedTeam = teamOfWeekendCategory ? String(resultValues[teamOfWeekendCategory.id] || "").trim() : "";
+            const selectedTeam = getConfiguredTeamForCategory(category) || (teamOfWeekendCategory ? String(resultValues[teamOfWeekendCategory.id] || "").trim() : "");
             const filteredOptions = isTeamBattleDriverCategory(category.name) && selectedTeam
               ? (meta.options || []).filter((option) => option.label.includes(`(${selectedTeam})`))
               : meta.options;

@@ -20,6 +20,10 @@ function isTeamBattleMarginCategory(categoryName) {
   return normalized.includes("team battle") && normalized.includes("margin");
 }
 
+function isDriverOfWeekendCategory(categoryName) {
+  return String(categoryName || "").toLowerCase().includes("driver of the weekend");
+}
+
 function isTeamOfWeekendCategory(categoryName) {
   return String(categoryName || "").toLowerCase().includes("team of the weekend");
 }
@@ -32,6 +36,7 @@ function isTeamBattleDriverCategory(categoryName) {
 function isDriverSelectionCategory(category) {
   const normalized = category.name.toLowerCase();
   if (isTeamBattleMarginCategory(normalized)) return false;
+  if (isDriverOfWeekendCategory(normalized)) return false;
   if (category.is_position_based) return true;
 
   if (/\bp\d+\b/i.test(normalized)) return true;
@@ -39,6 +44,19 @@ function isDriverSelectionCategory(category) {
   return ["driver", "winner", "pole", "fastest lap", "qualification", "result"].some((token) =>
     normalized.includes(token)
   );
+}
+
+function isReferencedPositionCategory(category) {
+  const normalized = String(category?.name || "").toLowerCase();
+  if (!category) return false;
+  if (isDriverOfWeekendCategory(normalized)) return false;
+  if (isTeamOfWeekendCategory(normalized)) return false;
+  if (isTeamBattleDriverCategory(normalized) || isTeamBattleMarginCategory(normalized)) return false;
+  return Boolean(category.is_position_based) || /\bp\d+\b/i.test(normalized);
+}
+
+function getConfiguredTeamForCategory(category) {
+  return String(category?.metadata?.fixedTeam || "").trim().toLowerCase();
 }
 
 router.get("/:raceId", authRequired, async (req, res) => {
@@ -70,7 +88,7 @@ router.post("/:raceId", authRequired, async (req, res) => {
   if (!race) return res.status(404).json({ error: 'Race not found' });
   if (getLockAt(race.deadline_at, lockMinutes).getTime() <= Date.now()) return res.status(423).json({ error: 'Picks are locked for this race' });
 
-  const categories = await PickCategory.find({ race: raceId }).select('name is_position_based').lean().exec();
+  const categories = await PickCategory.find({ race: raceId }).select('name is_position_based metadata').lean().exec();
   const categoriesById = new Map(categories.map((row) => [String(row._id), row]));
   const teamOfWeekendCategory = categories.find((row) => isTeamOfWeekendCategory(row.name));
 
@@ -94,6 +112,13 @@ router.post("/:raceId", authRequired, async (req, res) => {
   for (const pick of picks) {
     const category = categoriesById.get(pick.categoryId);
     if (!category) return res.status(400).json({ error: `Invalid category for race: ${pick.categoryId}` });
+    if (isDriverOfWeekendCategory(category.name)) {
+      const selectedPosition = Number(pick.valueNumber);
+      if (!Number.isInteger(selectedPosition) || selectedPosition < 1 || selectedPosition > 20) {
+        return res.status(400).json({ error: `Pick for '${category.name}' must be a position from 1 to 20` });
+      }
+      continue;
+    }
     if (isDriverSelectionCategory(category)) {
       const selectedDriver = String(pick.valueText || '').trim().toLowerCase();
       if (!selectedDriver || !validDrivers.has(selectedDriver)) return res.status(400).json({ error: `Pick for '${category.name}' must be selected from the race driver list` });
@@ -102,9 +127,11 @@ router.post("/:raceId", authRequired, async (req, res) => {
       const selectedTeam = String(pick.valueText || '').trim().toLowerCase();
       if (!selectedTeam || !validTeams.has(selectedTeam)) return res.status(400).json({ error: `Pick for '${category.name}' must be selected from a valid race team` });
     }
-    if (isTeamBattleDriverCategory(category.name) && selectedTeamOfWeekend) {
+    const configuredTeam = getConfiguredTeamForCategory(category);
+    const effectiveTeam = configuredTeam || selectedTeamOfWeekend;
+    if (isTeamBattleDriverCategory(category.name) && effectiveTeam) {
       const selectedDriver = String(pick.valueText || '').trim().toLowerCase();
-      const allowedTeamDrivers = new Set(driversRes.filter((row) => String(row.team_name || '').trim().toLowerCase() === selectedTeamOfWeekend).map((row) => row.driver_name.toLowerCase()));
+      const allowedTeamDrivers = new Set(driversRes.filter((row) => String(row.team_name || '').trim().toLowerCase() === effectiveTeam).map((row) => row.driver_name.toLowerCase()));
       if (!allowedTeamDrivers.has(selectedDriver)) return res.status(400).json({ error: 'Team Battle driver must belong to the selected Team of the Weekend' });
     }
     if (isTeamBattleMarginCategory(category.name)) {

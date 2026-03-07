@@ -205,18 +205,53 @@ function buildRaceCategories(
         };
       }
 
+      if (key === "teamOfWeekend") {
+        return [
+          {
+            name: "Team of the Weekend",
+            isPositionBased: false,
+            exactPoints: points.exactPoints,
+            partialPoints: points.partialPoints,
+            displayOrder: idx + 1
+          },
+          {
+            name: "Team Battle Winner (Driver)",
+            isPositionBased: false,
+            exactPoints: points.exactPoints,
+            partialPoints: points.partialPoints,
+            displayOrder: idx + 2
+          },
+          {
+            name: "Team Battle Winning Margin",
+            isPositionBased: false,
+            exactPoints: points.exactPoints,
+            partialPoints: points.partialPoints,
+            displayOrder: idx + 3
+          }
+        ];
+      }
+
       return {
         ...preset,
         exactPoints: points.exactPoints,
         partialPoints: points.partialPoints,
         displayOrder: idx + 1
       };
-    });
+    })
+    .flat()
+    .map((category, idx) => ({
+      ...category,
+      displayOrder: idx + 1
+    }));
 }
 
 function isTeamBattleMarginCategory(categoryName) {
   const normalized = categoryName.toLowerCase();
   return normalized.includes("team battle") && normalized.includes("margin");
+}
+
+function isDriverOfWeekendCategory(categoryName) {
+  return String(categoryName || "").toLowerCase().includes("driver of the weekend");
 }
 
 function isTeamOfWeekendCategory(categoryName) {
@@ -231,12 +266,39 @@ function isTeamBattleDriverCategory(categoryName) {
 function isDriverSelectionCategory(category) {
   const normalized = category.name.toLowerCase();
   if (isTeamBattleMarginCategory(normalized)) return false;
+  if (isDriverOfWeekendCategory(normalized)) return false;
   if (category.is_position_based) return true;
   if (/\bp\d+\b/i.test(normalized)) return true;
 
   return ["driver", "winner", "pole", "fastest lap", "qualification", "result"].some((token) =>
     normalized.includes(token)
   );
+}
+
+function isReferencedPositionCategory(category) {
+  const normalized = String(category?.name || "").toLowerCase();
+  if (!category) return false;
+  if (isDriverOfWeekendCategory(normalized)) return false;
+  if (isTeamOfWeekendCategory(normalized)) return false;
+  if (isTeamBattleDriverCategory(normalized) || isTeamBattleMarginCategory(normalized)) return false;
+  return Boolean(category.is_position_based) || /\bp\d+\b/i.test(normalized);
+}
+
+function collectReferencedDriverSelections(categories, submittedByCategoryId) {
+  const selectedDrivers = new Set();
+
+  (categories || []).forEach((category) => {
+    if (!isReferencedPositionCategory(category)) return;
+
+    const rawValue = String(submittedByCategoryId.get(String(category._id || category.id))?.valueText || "").trim();
+    if (rawValue) selectedDrivers.add(rawValue.toLowerCase());
+  });
+
+  return selectedDrivers;
+}
+
+function getConfiguredTeamForCategory(category) {
+  return String(category?.metadata?.fixedTeam || "").trim().toLowerCase();
 }
 
 async function createRaceWeekend(payload) {
@@ -306,6 +368,7 @@ async function createRaceWeekend(payload) {
         name: category.name,
         display_order: category.displayOrder,
         is_position_based: Boolean(category.isPositionBased),
+        metadata: category.metadata && typeof category.metadata === "object" ? category.metadata : {},
         exact_points: category.exactPoints || 0,
         partial_points: category.partialPoints || 0
       }));
@@ -924,6 +987,7 @@ router.post("/races/:raceId/categories", async (req, res) => {
       name: category.name,
       display_order: category.displayOrder,
       is_position_based: Boolean(category.isPositionBased),
+      metadata: category.metadata && typeof category.metadata === "object" ? category.metadata : {},
       exact_points: category.exactPoints || 0,
       partial_points: category.partialPoints || 0
     }));
@@ -974,6 +1038,8 @@ router.post("/races/:raceId/results", async (req, res) => {
     return cat ? isTeamOfWeekendCategory(cat.name) : false;
   });
   const selectedTeamOfWeekend = String(teamCategoryResult?.valueText || "").trim().toLowerCase();
+  const submittedByCategoryId = new Map((Array.isArray(results) ? results : []).map((item) => [String(item.categoryId), item]));
+  const referencedDriverSelections = collectReferencedDriverSelections(categoriesForRaceRows, submittedByCategoryId);
 
   // Attempt Mongo path
   try {
@@ -987,6 +1053,13 @@ router.post("/races/:raceId/results", async (req, res) => {
     for (const result of results) {
       const category = categoriesById.get(String(result.categoryId));
       if (!category) return res.status(400).json({ error: `Invalid category for race: ${result.categoryId}` });
+
+      if (isDriverOfWeekendCategory(category.name)) {
+        const selectedPosition = Number(result.valueNumber);
+        if (!Number.isInteger(selectedPosition) || selectedPosition < 1 || selectedPosition > 20) {
+          return res.status(400).json({ error: `Result for '${category.name}' must be a position from 1 to 20` });
+        }
+      }
 
       if (isDriverSelectionCategory(category)) {
         const selectedDriver = String(result.valueText || "").trim().toLowerCase();
@@ -1009,11 +1082,13 @@ router.post("/races/:raceId/results", async (req, res) => {
         }
       }
 
-      if (isTeamBattleDriverCategory(category.name) && selectedTeamOfWeekend) {
+      const configuredTeam = getConfiguredTeamForCategory(category);
+      const effectiveTeam = configuredTeam || selectedTeamOfWeekend;
+      if (isTeamBattleDriverCategory(category.name) && effectiveTeam) {
         const selectedDriver = String(result.valueText || "").trim().toLowerCase();
         const allowedTeamDrivers = new Set(
           driversResRows
-            .filter((row) => String(row.team_name || row.team_name || "").trim().toLowerCase() === selectedTeamOfWeekend)
+            .filter((row) => String(row.team_name || row.team_name || "").trim().toLowerCase() === effectiveTeam)
             .map((row) => (row.driver_name || row.name).toLowerCase())
         );
         if (!allowedTeamDrivers.has(selectedDriver)) {
