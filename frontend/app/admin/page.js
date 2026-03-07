@@ -216,6 +216,22 @@ function mapCategoryNameToOptionKey(categoryName) {
   return null;
 }
 
+function formatDateTimeLocal(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+
+  const pad = (input) => String(input).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function hasSprintCategories(categories) {
+  return (categories || []).some((category) => {
+    const name = String(category?.name || "").toLowerCase();
+    return name.includes("sprint qualification") || name.includes("sprint result");
+  });
+}
+
 export default function AdminPage() {
   const router = useRouter();
   const currentYear = new Date().getUTCFullYear();
@@ -230,6 +246,9 @@ export default function AdminPage() {
 
   const [createLeagueForm, setCreateLeagueForm] = useState({ name: "", inviteCode: "" });
   const [leagueMessage, setLeagueMessage] = useState("");
+  const [editingLeagueId, setEditingLeagueId] = useState(null);
+  const [editingLeagueForm, setEditingLeagueForm] = useState({ name: "", inviteCode: "" });
+  const [editingRaceId, setEditingRaceId] = useState("");
 
   const [race, setRace] = useState({
     leagueId: "",
@@ -545,6 +564,46 @@ export default function AdminPage() {
     }
   }
 
+  async function saveLeagueEdits() {
+    if (!editingLeagueId) return;
+
+    setLeagueMessage("");
+    try {
+      const payload = {
+        name: editingLeagueForm.name,
+        inviteCode: editingLeagueForm.inviteCode
+      };
+      const updated = await apiFetch(`/admin/leagues/${editingLeagueId}`, {
+        method: "PATCH",
+        body: JSON.stringify(payload)
+      });
+
+      setLeagues((prev) => prev.map((league) => (league.id === editingLeagueId ? updated : league)));
+      if (selectedLeagueId === editingLeagueId) {
+        setSelectedLeagueId(updated.id);
+        await loadLeagueMembers(updated.id);
+      }
+      setEditingLeagueId(null);
+      setEditingLeagueForm({ name: "", inviteCode: "" });
+      setLeagueMessage("League updated.");
+    } catch (err) {
+      setLeagueMessage(err.message);
+    }
+  }
+
+  async function updateUserRole(userId, role) {
+    try {
+      const updated = await apiFetch(`/admin/users/${userId}/role`, {
+        method: "PATCH",
+        body: JSON.stringify({ role })
+      });
+      setUsers((prev) => prev.map((row) => (row.id === userId ? { ...row, role: updated.role } : row)));
+      setMessage("User role updated");
+    } catch (err) {
+      setMessage(String(err.message || err));
+    }
+  }
+
   async function createRace(e) {
     e.preventDefault();
     setMessage("");
@@ -563,33 +622,83 @@ export default function AdminPage() {
       .map((value) => Number(value))
       .filter((value) => Number.isInteger(value) && value > 0);
 
+    const payload = {
+      ...race,
+      externalRound: race.externalRound ? Number(race.externalRound) : null,
+      predictionOptions: selectedOptions,
+      pointOverrides: Object.fromEntries(
+        selectedOptions.map((optionKey) => [
+          optionKey,
+          {
+            exactPoints: Number(optionPoints[optionKey]?.exactPoints || 0),
+            partialPoints: Number(optionPoints[optionKey]?.partialPoints || 0)
+          }
+        ])
+      ),
+      positionSlotsByOption: {
+        racePositions: racePositionSlots,
+        sprintPositions: sprintPositionSlots,
+        raceQualificationPositions: raceQualificationSlots,
+        sprintQualificationPositions: sprintQualificationSlots
+      },
+      drivers: []
+    };
+
     try {
-      await apiFetch("/admin/races", {
-        method: "POST",
-        body: JSON.stringify({
-          ...race,
-          externalRound: race.externalRound ? Number(race.externalRound) : null,
-          predictionOptions: selectedOptions,
-          pointOverrides: Object.fromEntries(
-            selectedOptions.map((optionKey) => [
-              optionKey,
-              {
-                exactPoints: Number(optionPoints[optionKey]?.exactPoints || 0),
-                partialPoints: Number(optionPoints[optionKey]?.partialPoints || 0)
-              }
-            ])
-          ),
-          positionSlotsByOption: {
-            racePositions: racePositionSlots,
-            sprintPositions: sprintPositionSlots,
-            raceQualificationPositions: raceQualificationSlots,
-            sprintQualificationPositions: sprintQualificationSlots
-          },
-          drivers: []
-        })
-      });
-      setMessage("Race created with selected options");
+      if (editingRaceId) {
+        await apiFetch(`/admin/races/${editingRaceId}`, {
+          method: "PATCH",
+          body: JSON.stringify(payload)
+        });
+        setMessage("Race updated");
+      } else {
+        await apiFetch("/admin/races", {
+          method: "POST",
+          body: JSON.stringify(payload)
+        });
+        setMessage("Race created with selected options");
+      }
       await loadRaces();
+    } catch (err) {
+      setMessage(err.message);
+    }
+  }
+
+  async function loadRaceEditor(raceId) {
+    if (!raceId) {
+      setEditingRaceId("");
+      setRace((prev) => ({
+        ...prev,
+        applyToAllLeagues: true,
+        leagueId: selectedLeagueId || "",
+        leagueIds: selectedLeagueId ? [selectedLeagueId] : [],
+        name: "",
+        circuitName: "",
+        externalRound: "",
+        raceDate: "",
+        deadlineAt: "",
+        hasSprintWeekend: false
+      }));
+      return;
+    }
+
+    try {
+      const detail = await apiFetch(`/races/${raceId}`);
+      const assignedLeagueIds = (detail.available_leagues || []).map((league) => league.id);
+      setEditingRaceId(raceId);
+      setRace((prev) => ({
+        ...prev,
+        applyToAllLeagues: leagues.length > 0 && assignedLeagueIds.length === leagues.length,
+        leagueId: assignedLeagueIds[0] || "",
+        leagueIds: assignedLeagueIds,
+        name: detail.name || "",
+        circuitName: detail.circuit_name || "",
+        externalRound: detail.external_round ? String(detail.external_round) : "",
+        raceDate: formatDateTimeLocal(detail.race_date),
+        deadlineAt: formatDateTimeLocal(detail.deadline_at),
+        hasSprintWeekend: hasSprintCategories(detail.categories)
+      }));
+      setMessage("");
     } catch (err) {
       setMessage(err.message);
     }
@@ -931,9 +1040,59 @@ export default function AdminPage() {
           </label>
 
           {selectedLeague ? (
-            <div className="rounded-xl border border-white/20 bg-white/5 p-3">
-              <p className="font-semibold text-slate-100">Invite Code: {selectedLeague.invite_code}</p>
-              <p className="text-xs text-slate-400">Share this code with users so they can join the league.</p>
+            <div className="space-y-3 rounded-xl border border-white/20 bg-white/5 p-3">
+              <div className="flex items-center justify-between gap-3">
+                <p className="font-semibold text-slate-100">League Details</p>
+                {editingLeagueId === selectedLeague.id ? null : (
+                  <button
+                    type="button"
+                    className="tap rounded-xl border border-white/30 px-3 py-2 text-xs font-semibold text-slate-100"
+                    onClick={() => {
+                      setEditingLeagueId(selectedLeague.id);
+                      setEditingLeagueForm({ name: selectedLeague.name, inviteCode: selectedLeague.invite_code });
+                    }}
+                  >
+                    Edit League
+                  </button>
+                )}
+              </div>
+
+              {editingLeagueId === selectedLeague.id ? (
+                <div className="grid grid-cols-1 gap-2 md:grid-cols-[1fr_1fr_auto]">
+                  <input
+                    className="tap rounded-xl border border-white/30 bg-white/10 px-3 py-2 text-white"
+                    value={editingLeagueForm.name}
+                    onChange={(e) => setEditingLeagueForm((prev) => ({ ...prev, name: e.target.value }))}
+                    placeholder="League name"
+                  />
+                  <input
+                    className="tap rounded-xl border border-white/30 bg-white/10 px-3 py-2 text-white"
+                    value={editingLeagueForm.inviteCode}
+                    onChange={(e) => setEditingLeagueForm((prev) => ({ ...prev, inviteCode: e.target.value.toUpperCase() }))}
+                    placeholder="Invite code"
+                  />
+                  <div className="flex gap-2">
+                    <button type="button" className="tap rounded-xl bg-accent-cyan px-4 py-2 font-bold text-track-900" onClick={saveLeagueEdits}>
+                      Save
+                    </button>
+                    <button
+                      type="button"
+                      className="tap rounded-xl border border-white/30 px-4 py-2 font-bold text-slate-100"
+                      onClick={() => {
+                        setEditingLeagueId(null);
+                        setEditingLeagueForm({ name: "", inviteCode: "" });
+                      }}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <>
+                  <p className="font-semibold text-slate-100">Invite Code: {selectedLeague.invite_code}</p>
+                  <p className="text-xs text-slate-400">Share this code with users so they can join the league.</p>
+                </>
+              )}
             </div>
           ) : null}
 
@@ -1151,10 +1310,26 @@ export default function AdminPage() {
 
       {activeTab === "createRace" ? (
         <form onSubmit={createRace} className="card space-y-3 p-4">
-          <h2 className="font-display text-2xl text-accent-cyan">Create Race Weekend (Manual)</h2>
+          <h2 className="font-display text-2xl text-accent-cyan">{editingRaceId ? "Edit Race Weekend" : "Create Race Weekend (Manual)"}</h2>
           <p className="text-xs text-slate-400">
             Prediction categories are configured in the <span className="font-semibold text-slate-200">Prediction Options</span> tab.
           </p>
+
+          <label className="block text-sm text-slate-200">
+            <span className="mb-1 block font-semibold text-accent-cyan">Manage Existing Race</span>
+            <select
+              className="tap w-full rounded-xl border border-white/30 bg-white/10 px-3 py-2 text-white"
+              value={editingRaceId}
+              onChange={(e) => loadRaceEditor(e.target.value)}
+            >
+              <option value="" className="bg-track-900 text-slate-300">Create new race</option>
+              {allRaces.map((raceRow) => (
+                <option key={raceRow.id} value={raceRow.id} className="bg-track-900 text-white">
+                  {raceRow.name} - {new Date(raceRow.race_date).toLocaleDateString()}
+                </option>
+              ))}
+            </select>
+          </label>
 
           <div className="rounded-xl border border-white/20 bg-white/5 p-3">
             <label className="flex items-center gap-2 text-sm text-slate-200">
@@ -1227,7 +1402,20 @@ export default function AdminPage() {
             Drivers are managed after race creation in the <span className="font-semibold text-slate-200">Drivers</span> tab.
           </p>
 
-          <button className="tap rounded-xl bg-accent-red px-4 py-2 font-bold text-white">Create Race</button>
+          <div className="flex gap-2">
+            <button className="tap rounded-xl bg-accent-red px-4 py-2 font-bold text-white">
+              {editingRaceId ? "Save Race Changes" : "Create Race"}
+            </button>
+            {editingRaceId ? (
+              <button
+                type="button"
+                className="tap rounded-xl border border-white/30 px-4 py-2 font-bold text-slate-100"
+                onClick={() => loadRaceEditor("")}
+              >
+                New Race
+              </button>
+            ) : null}
+          </div>
 
           <div className="space-y-2 rounded-xl border border-white/20 bg-white/5 p-3 text-sm text-slate-200">
             <p className="font-semibold text-slate-100">Bulk Races Upload (JSON or CSV)</p>
@@ -1460,7 +1648,7 @@ raceId,tieBreakerValue,categoryName,valueText,valueNumber
                     <td className="py-2">
                       {editingUserId === u.id ? (
                         <>
-                          <button className="mr-2 tap rounded bg-accent-cyan px-2 py-1 text-sm" onClick={async () => {
+                          <button type="button" className="mr-2 tap rounded bg-accent-cyan px-2 py-1 text-sm" onClick={async () => {
                             try {
                               const payload = { name: editingUserForm.name, email: editingUserForm.email };
                               const updated = await apiFetch(`/admin/users/${u.id}`, { method: "PATCH", body: JSON.stringify(payload) });
@@ -1472,11 +1660,19 @@ raceId,tieBreakerValue,categoryName,valueText,valueNumber
                               setMessage(String(err.message || err));
                             }
                           }}>Save</button>
-                          <button className="tap rounded px-2 py-1 text-sm" onClick={() => { setEditingUserId(null); setEditingUserForm({ name: "", email: "" }); }}>Cancel</button>
+                          <button type="button" className="tap rounded px-2 py-1 text-sm" onClick={() => { setEditingUserId(null); setEditingUserForm({ name: "", email: "" }); }}>Cancel</button>
                         </>
                       ) : (
-                        <button className="tap rounded px-2 py-1 text-sm" onClick={() => { setEditingUserId(u.id); setEditingUserForm({ name: u.name, email: u.email }); }}>Edit</button>
+                        <button type="button" className="tap rounded px-2 py-1 text-sm" onClick={() => { setEditingUserId(u.id); setEditingUserForm({ name: u.name, email: u.email }); }}>Edit</button>
                       )}
+                      <select
+                        className="ml-2 rounded border border-white/30 bg-white/10 px-2 py-1 text-sm text-white"
+                        value={u.role}
+                        onChange={(e) => updateUserRole(u.id, e.target.value)}
+                      >
+                        <option value="player" className="bg-track-900 text-white">player</option>
+                        <option value="admin" className="bg-track-900 text-white">admin</option>
+                      </select>
                     </td>
                   </tr>
                 ))}
