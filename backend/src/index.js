@@ -13,11 +13,20 @@ import leagueRoutes from "./routes/leagues.js";
 const app = express();
 
 app.use(helmet());
-const allowedOrigins = [config.frontendUrlDebug, config.frontendUrlProduction].filter(Boolean);
+const allowedOrigins = new Set(config.corsAllowedOrigins || []);
 
 app.use(
   cors({
-    origin: allowedOrigins,
+    origin(origin, callback) {
+      if (!origin) return callback(null, true);
+
+      const normalizedOrigin = String(origin).replace(/\/$/, "");
+      if (allowedOrigins.has(normalizedOrigin)) {
+        return callback(null, true);
+      }
+
+      return callback(new Error(`Origin ${origin} is not allowed by Access-Control-Allow-Origin`));
+    },
     credentials: true
   })
 );
