@@ -60,6 +60,10 @@ function extractDriverTeams(payload) {
   return teams;
 }
 
+function buildDriverLookupKey(name) {
+  return String(name || "").trim().toLowerCase();
+}
+
 function getFullDriverName(driver) {
   return `${driver?.givenName || ""} ${driver?.familyName || ""}`.trim();
 }
@@ -190,8 +194,35 @@ function pickAutoResultForCategory(categoryName, latestRace) {
 }
 
 async function fetchSeasonDriverTeams(season) {
-  const payload = await fetchJson(`${JOLPICA_BASE}/${season}/driverStandings.json`);
-  return extractDriverTeams(payload);
+  const preferredSeason = Number(season) || new Date().getUTCFullYear();
+  const candidateSeasons = [...new Set([preferredSeason, preferredSeason - 1, preferredSeason - 2].filter((value) => value >= 1950))];
+
+  for (const candidateSeason of candidateSeasons) {
+    const payload = await fetchJson(`${JOLPICA_BASE}/${candidateSeason}/driverStandings.json`).catch(() => null);
+    const teams = extractDriverTeams(payload);
+    if (teams.size > 0) {
+      return { teams, sourceSeason: candidateSeason };
+    }
+  }
+
+  return { teams: new Map(), sourceSeason: null };
+}
+
+async function fetchKnownLocalDriverTeams() {
+  const rows = await RaceDriver.find({ team_name: { $nin: [null, ""] } })
+    .select("driver_name team_name")
+    .lean()
+    .exec();
+
+  const teams = new Map();
+  rows.forEach((row) => {
+    const key = buildDriverLookupKey(row.driver_name);
+    const teamName = String(row.team_name || "").trim();
+    if (!key || !teamName || teams.has(key)) return;
+    teams.set(key, teamName);
+  });
+
+  return teams;
 }
 
 async function canRefreshRaceDrivers(raceId) {
@@ -398,13 +429,14 @@ export async function syncSeasonFromJolpica({ leagueId, season }) {
 
   const racesPayload = await fetchJson(`${JOLPICA_BASE}/${season}/races.json`);
   const driversPayload = await fetchJson(`${JOLPICA_BASE}/${season}/drivers.json`);
-  const teamsByDriver = await fetchSeasonDriverTeams(season).catch(() => new Map());
+  const { teams: teamsByDriver, sourceSeason: driverTeamSeason } = await fetchSeasonDriverTeams(season).catch(() => ({ teams: new Map(), sourceSeason: null }));
+  const localTeamsByDriver = await fetchKnownLocalDriverTeams().catch(() => new Map());
 
   const races = extractRaces(racesPayload);
   const driverNames = extractDrivers(driversPayload);
   const drivers = driverNames.map((name) => ({
     name,
-    teamName: teamsByDriver.get(name) || null
+    teamName: teamsByDriver.get(name) || localTeamsByDriver.get(buildDriverLookupKey(name)) || null
   }));
 
   let created = 0;
@@ -436,7 +468,8 @@ export async function syncSeasonFromJolpica({ leagueId, season }) {
     created,
     updated,
     driversPerRace: drivers.length,
-    skippedDriverRefresh
+    skippedDriverRefresh,
+    driverTeamSeason
   };
 }
 
