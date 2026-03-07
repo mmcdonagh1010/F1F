@@ -4,6 +4,7 @@ node_modules/
 
 # Environment files
 .env
+**/.env
 
 # VS Code and Mac files
 .vscode/
@@ -12,3 +13,5 @@ node_modules/
 # Build output
 dist/
 build/
+.next/
+**/.next/
