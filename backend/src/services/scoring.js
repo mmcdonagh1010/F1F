@@ -1,4 +1,7 @@
-import { query } from "../db.js";
+import PickCategory from "../models/PickCategory.js";
+import Result from "../models/Result.js";
+import Pick from "../models/Pick.js";
+import Score from "../models/Score.js";
 
 function parsePositionCategoryMeta(categoryName) {
   const match = String(categoryName || "").match(/(race result|sprint result|race qualification|sprint qualification)\s*p(\d+)/i);
@@ -17,40 +20,21 @@ function parsePositionCategoryMeta(categoryName) {
 }
 
 export async function calculateRaceScores(raceId, targetLeagueId = null) {
-  const categoriesRes = await query(
-    `SELECT id, name, is_position_based, exact_points, partial_points
-     FROM pick_categories
-     WHERE race_id = $1
-     ORDER BY display_order ASC`,
-    [raceId]
-  );
+  const categories = await PickCategory.find({ race: raceId }).sort({ display_order: 1 }).lean().exec();
+  const results = await Result.find({ race: raceId }).lean().exec();
+  const picksQuery = { race: raceId };
+  if (targetLeagueId) picksQuery.league = targetLeagueId;
+  const picks = await Pick.find(picksQuery).lean().exec();
 
-  const resultsRes = await query(
-    `SELECT category_id, value_text, value_number
-     FROM results
-     WHERE race_id = $1`,
-    [raceId]
-  );
-
-  const picksRes = await query(
-    `SELECT p.league_id, p.user_id, p.category_id, p.value_text, p.value_number
-     FROM picks p
-     WHERE p.race_id = $1
-       AND ($2::uuid IS NULL OR p.league_id = $2)`,
-    [raceId, targetLeagueId]
-  );
-
-  const categories = categoriesRes.rows;
-  const resultsByCategory = new Map(resultsRes.rows.map((r) => [r.category_id, r]));
-
-  const categoriesById = new Map(categories.map((category) => [category.id, category]));
+  const resultsByCategory = new Map(results.map((r) => [String(r.category), r]));
+  const categoriesById = new Map(categories.map((c) => [String(c._id), c]));
   const actualPositionByScopeAndDriver = new Map();
 
   for (const category of categories) {
     const meta = parsePositionCategoryMeta(category.name);
     if (!meta) continue;
 
-    const official = resultsByCategory.get(category.id);
+    const official = resultsByCategory.get(String(category._id));
     const driverName = String(official?.value_text || "").trim().toLowerCase();
     if (!driverName) continue;
 
@@ -59,9 +43,9 @@ export async function calculateRaceScores(raceId, targetLeagueId = null) {
 
   const leagueUserScoreMap = new Map();
 
-  for (const pick of picksRes.rows) {
-    const category = categoriesById.get(pick.category_id);
-    const official = resultsByCategory.get(pick.category_id);
+  for (const pick of picks) {
+    const category = categoriesById.get(String(pick.category));
+    const official = resultsByCategory.get(String(pick.category));
     if (!category || !official) continue;
 
     const exactText = pick.value_text && official.value_text && pick.value_text === official.value_text;
@@ -70,7 +54,7 @@ export async function calculateRaceScores(raceId, targetLeagueId = null) {
     let earned = 0;
 
     if (exactText || exactNumber) {
-      earned = category.exact_points;
+      earned = Number(category.exact_points || 0);
     } else {
       const meta = parsePositionCategoryMeta(category.name);
       if (meta && pick.value_text) {
@@ -80,28 +64,28 @@ export async function calculateRaceScores(raceId, targetLeagueId = null) {
         if (Number.isInteger(actualPosition)) {
           const step = Math.max(1, Number(category.partial_points) || 1);
           const distance = Math.abs(actualPosition - meta.position);
-          earned = Math.max(0, Number(category.exact_points) - distance * step);
+          earned = Math.max(0, Number(category.exact_points || 0) - distance * step);
         }
       }
     }
 
-    const key = `${pick.league_id}:${pick.user_id}`;
+    const leagueId = String(pick.league || '');
+    const userId = String(pick.user);
+    const key = `${leagueId}:${userId}`;
     leagueUserScoreMap.set(key, (leagueUserScoreMap.get(key) || 0) + earned);
   }
 
+  // remove old scores
   if (targetLeagueId) {
-    await query("DELETE FROM scores WHERE race_id = $1 AND league_id = $2", [raceId, targetLeagueId]);
+    await Score.deleteMany({ race: raceId, league: targetLeagueId }).exec();
   } else {
-    await query("DELETE FROM scores WHERE race_id = $1", [raceId]);
+    await Score.deleteMany({ race: raceId }).exec();
   }
 
+  // insert new scores
   for (const [key, points] of leagueUserScoreMap.entries()) {
     const [leagueId, userId] = key.split(":");
-    await query(
-      `INSERT INTO scores (league_id, user_id, race_id, points)
-       VALUES ($1, $2, $3, $4)`,
-      [leagueId, userId, raceId, points]
-    );
+    await Score.create({ league: leagueId || null, user: userId, race: raceId, points });
   }
 
   return Array.from(leagueUserScoreMap.entries()).map(([key, points]) => {

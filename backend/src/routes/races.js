@@ -1,7 +1,12 @@
 import express from "express";
-import { query } from "../db.js";
 import { authRequired } from "../middleware/auth.js";
 import { getPickLockMinutesBeforeDeadline } from "../services/settings.js";
+import Race from "../models/Race.js";
+import PickCategory from "../models/PickCategory.js";
+import RaceDriver from "../models/RaceDriver.js";
+import League from "../models/League.js";
+import LeagueMember from "../models/LeagueMember.js";
+import mongoose from "mongoose";
 
 const router = express.Router();
 
@@ -13,27 +18,31 @@ function getLockAt(deadlineAt, lockMinutes) {
 router.get("/", authRequired, async (req, res) => {
   const lockMinutes = await getPickLockMinutesBeforeDeadline();
   const role = req.user.role || "player";
-  const races = role === "admin"
-    ? await query(
-      `SELECT r.id, r.league_id, r.name, r.circuit_name, r.external_round, r.race_date, r.deadline_at, r.status, r.is_visible
-       FROM races r
-       ORDER BY r.race_date ASC`
-    )
-    : await query(
-      `SELECT DISTINCT r.id, r.league_id, r.name, r.circuit_name, r.external_round, r.race_date, r.deadline_at, r.status, r.is_visible
-       FROM races r
-       JOIN race_leagues rl ON rl.race_id = r.id
-       JOIN league_members lm ON lm.league_id = rl.league_id
-       WHERE lm.user_id = $1
-         AND r.is_visible = TRUE
-       ORDER BY r.race_date ASC`,
-      [req.user.id]
-    );
+  let racesDocs = [];
+  if (role === 'admin') {
+    racesDocs = await Race.find({}).sort({ race_date: 1 }).lean().exec();
+  } else {
+    const memberships = await LeagueMember.find({ user: req.user.id }).select('league').lean().exec();
+    const leagueIds = memberships.map((m) => String(m.league));
+    if (leagueIds.length > 0) {
+      racesDocs = await Race.find({ leagues: { $in: leagueIds }, is_visible: true }).sort({ race_date: 1 }).lean().exec();
+    } else {
+      racesDocs = [];
+    }
+  }
 
-  const withLockInfo = races.rows.map((race) => {
+  const withLockInfo = racesDocs.map((race) => {
     const lockAt = getLockAt(race.deadline_at, lockMinutes);
     return {
-      ...race,
+      id: String(race._id),
+      league_id: race.league || null,
+      name: race.name,
+      circuit_name: race.circuit_name,
+      external_round: race.external_round || null,
+      race_date: race.race_date,
+      deadline_at: race.deadline_at,
+      status: race.status || null,
+      is_visible: Boolean(race.is_visible),
       lock_at: lockAt,
       is_locked: new Date(lockAt).getTime() <= Date.now()
     };
@@ -47,72 +56,43 @@ router.get("/:raceId", authRequired, async (req, res) => {
   const lockMinutes = await getPickLockMinutesBeforeDeadline();
   const role = req.user.role || "player";
 
-  const race = await query(
-    `SELECT id, league_id, name, circuit_name, external_round, race_date, deadline_at, status, is_visible
-     FROM races
-     WHERE id = $1`,
-    [raceId]
-  );
+  // Load race
+  const raceDoc = await Race.findById(raceId).lean().exec();
+  if (!raceDoc) return res.status(404).json({ error: 'Race not found' });
 
-  if (race.rowCount === 0) {
-    return res.status(404).json({ error: "Race not found" });
+  const categories = await PickCategory.find({ race: raceId }).sort({ display_order: 1 }).lean().exec();
+  const drivers = await RaceDriver.find({ race: raceId }).sort({ display_order: 1 }).lean().exec();
+
+  let availableLeagues = [];
+  if (role === 'admin') {
+    if (Array.isArray(raceDoc.leagues) && raceDoc.leagues.length) {
+      const leagueDocs = await League.find({ _id: { $in: raceDoc.leagues } }).select('name').sort({ name: 1 }).lean().exec();
+      availableLeagues = leagueDocs.map((l) => ({ id: String(l._id), name: l.name }));
+    }
+  } else {
+    if (!raceDoc.is_visible) return res.status(404).json({ error: 'Race not found' });
+    const membershipDocs = await LeagueMember.find({ user: req.user.id, league: { $in: raceDoc.leagues || [] } }).populate({ path: 'league', select: 'name' }).lean().exec();
+    availableLeagues = membershipDocs.map((m) => ({ id: String(m.league._id), name: m.league.name }));
+    if (availableLeagues.length === 0) return res.status(403).json({ error: 'Race is not available in your leagues' });
   }
 
-  const categories = await query(
-    `SELECT id, name, display_order, is_position_based, exact_points, partial_points
-     FROM pick_categories
-     WHERE race_id = $1
-     ORDER BY display_order ASC`,
-    [raceId]
-  );
-
-  const drivers = await query(
-    `SELECT id, driver_name, team_name, metadata, display_order
-     FROM race_drivers
-     WHERE race_id = $1
-     ORDER BY display_order ASC`,
-    [raceId]
-  );
-
-  const userLeagueRes = role === "admin"
-    ? await query(
-      `SELECT l.id, l.name
-       FROM race_leagues rl
-       JOIN leagues l ON l.id = rl.league_id
-       WHERE rl.race_id = $1
-       ORDER BY l.name ASC`,
-      [raceId]
-    )
-    : await query(
-      `SELECT l.id, l.name
-       FROM race_leagues rl
-       JOIN league_members lm ON lm.league_id = rl.league_id
-       JOIN leagues l ON l.id = rl.league_id
-       WHERE rl.race_id = $1
-         AND lm.user_id = $2
-       ORDER BY l.name ASC`,
-      [raceId, req.user.id]
-    );
-
-  const availableLeagues = userLeagueRes.rows;
-
-  if (role !== "admin" && race.rows[0].is_visible === false) {
-    return res.status(404).json({ error: "Race not found" });
-  }
-
-  if (role !== "admin" && availableLeagues.length === 0) {
-    return res.status(403).json({ error: "Race is not available in your leagues" });
-  }
-
-  const lockAt = getLockAt(race.rows[0].deadline_at, lockMinutes);
+  const lockAt = getLockAt(raceDoc.deadline_at, lockMinutes);
 
   return res.json({
-    ...race.rows[0],
+    id: String(raceDoc._id),
+    league_id: raceDoc.league || null,
+    name: raceDoc.name,
+    circuit_name: raceDoc.circuit_name,
+    external_round: raceDoc.external_round || null,
+    race_date: raceDoc.race_date,
+    deadline_at: raceDoc.deadline_at,
+    status: raceDoc.status || null,
+    is_visible: Boolean(raceDoc.is_visible),
     available_leagues: availableLeagues,
     lock_at: lockAt,
     is_locked: new Date(lockAt).getTime() <= Date.now(),
-    categories: categories.rows,
-    drivers: drivers.rows
+    categories,
+    drivers
   });
 });
 

@@ -1,6 +1,6 @@
 import express from "express";
 import crypto from "crypto";
-import { query } from "../db.js";
+// MongoDB-only: removed SQL fallback and imports
 import { authRequired, adminRequired } from "../middleware/auth.js";
 import { calculateRaceScores } from "../services/scoring.js";
 import { syncLatestRaceResultsFromJolpica, syncSeasonFromJolpica } from "../services/jolpicaSync.js";
@@ -259,86 +259,69 @@ async function createRaceWeekend(payload) {
     throw new Error("externalRound must be an integer from 1 to 30");
   }
 
-  const allLeagues = await query("SELECT id FROM leagues ORDER BY created_at ASC");
-  const allLeagueIds = allLeagues.rows.map((row) => row.id);
-  if (allLeagueIds.length === 0) {
-    throw new Error("Create at least one league before creating a race");
-  }
+  // Attempt MongoDB path first
+  try {
+    const { connectMongo } = await import("../mongo.js");
+    const League = (await import("../models/League.js")).default;
+    const Race = (await import("../models/Race.js")).default;
+    const PickCategory = (await import("../models/PickCategory.js")).default;
+    const RaceDriver = (await import("../models/RaceDriver.js")).default;
+    await connectMongo();
 
-  let assignedLeagueIds = [];
-  if (Array.isArray(leagueIds) && leagueIds.length > 0) {
-    const unique = [...new Set(leagueIds.map((id) => String(id).trim()).filter(Boolean))];
-    assignedLeagueIds = unique.filter((id) => allLeagueIds.includes(id));
-  } else if (applyToAllLeagues !== false) {
-    assignedLeagueIds = allLeagueIds;
-  } else if (leagueId) {
-    assignedLeagueIds = allLeagueIds.includes(leagueId) ? [leagueId] : [];
-  }
+    const allLeagues = await League.find().sort({ created_at: 1 }).select('_id').lean().exec();
+    const allLeagueIds = allLeagues.map((l) => String(l._id));
+    if (allLeagueIds.length === 0) throw new Error('Create at least one league before creating a race');
 
-  if (assignedLeagueIds.length === 0) {
-    throw new Error("Select at least one valid league for this race");
-  }
+    let assignedLeagueIds = [];
+    if (Array.isArray(leagueIds) && leagueIds.length > 0) {
+      const unique = [...new Set(leagueIds.map((id) => String(id).trim()).filter(Boolean))];
+      assignedLeagueIds = unique.filter((id) => allLeagueIds.includes(id));
+    } else if (applyToAllLeagues !== false) {
+      assignedLeagueIds = allLeagueIds;
+    } else if (leagueId) {
+      assignedLeagueIds = allLeagueIds.includes(String(leagueId)) ? [String(leagueId)] : [];
+    }
 
-  const primaryLeagueId = assignedLeagueIds[0];
+    if (assignedLeagueIds.length === 0) throw new Error('Select at least one valid league for this race');
+    const primaryLeagueId = assignedLeagueIds[0];
 
-  const created = await query(
-    `INSERT INTO races (league_id, name, circuit_name, external_round, race_date, deadline_at)
-     VALUES ($1, $2, $3, $4, $5, $6)
-     RETURNING *`,
-    [primaryLeagueId, name, circuitName, roundValue, raceDate, deadlineAt]
-  );
+    const createdRace = await Race.create({ league: primaryLeagueId, leagues: assignedLeagueIds, name, circuit_name: circuitName, external_round: roundValue, race_date: new Date(raceDate), deadline_at: new Date(deadlineAt) });
 
-  const race = created.rows[0];
-  const categories = buildRaceCategories(
-    predictionOptions,
-    Boolean(hasSprintWeekend),
-    positionSlots,
-    positionSlotsByOption && typeof positionSlotsByOption === "object" ? positionSlotsByOption : {},
-    pointOverrides && typeof pointOverrides === "object" ? pointOverrides : {}
-  );
-  const raceDrivers = normalizeDriverRows(drivers);
-
-  for (const category of categories) {
-    await query(
-      `INSERT INTO pick_categories
-       (race_id, name, display_order, is_position_based, exact_points, partial_points)
-       VALUES ($1, $2, $3, $4, $5, $6)`,
-      [
-        race.id,
-        category.name,
-        category.displayOrder,
-        Boolean(category.isPositionBased),
-        category.exactPoints,
-        category.partialPoints || 0
-      ]
+    const categories = buildRaceCategories(
+      predictionOptions,
+      Boolean(hasSprintWeekend),
+      positionSlots,
+      positionSlotsByOption && typeof positionSlotsByOption === "object" ? positionSlotsByOption : {},
+      pointOverrides && typeof pointOverrides === "object" ? pointOverrides : {}
     );
-  }
 
-  for (const assignedLeagueId of assignedLeagueIds) {
-    await query(
-      `INSERT INTO race_leagues (race_id, league_id)
-       VALUES ($1, $2)
-       ON CONFLICT (race_id, league_id) DO NOTHING`,
-      [race.id, assignedLeagueId]
-    );
-  }
+    const raceDrivers = normalizeDriverRows(drivers);
 
-  for (let i = 0; i < raceDrivers.length; i += 1) {
-    await query(
-      `INSERT INTO race_drivers (race_id, driver_name, team_name, metadata, display_order)
-       VALUES ($1, $2, $3, $4, $5)
-       ON CONFLICT (race_id, driver_name) DO NOTHING`,
-      [race.id, raceDrivers[i].name, raceDrivers[i].teamName, raceDrivers[i].metadata, i + 1]
-    );
-  }
+    if (categories && categories.length) {
+      const docs = categories.map((category) => ({
+        race: createdRace._id,
+        name: category.name,
+        display_order: category.displayOrder,
+        is_position_based: Boolean(category.isPositionBased),
+        exact_points: category.exactPoints || 0,
+        partial_points: category.partialPoints || 0
+      }));
+      await PickCategory.insertMany(docs);
+    }
 
-  return {
-    ...race,
-    assignedLeagueIds,
-    categoriesCreated: categories.length,
-    driversCreated: raceDrivers.length
-  };
-}
+    if (assignedLeagueIds && assignedLeagueIds.length) {
+      await Race.updateOne({ _id: createdRace._id }, { $addToSet: { leagues: { $each: assignedLeagueIds } } }).exec();
+    }
+
+    if (raceDrivers && raceDrivers.length) {
+      const driverDocs = raceDrivers.map((d, idx) => ({ race: createdRace._id, driver_name: d.name, team_name: d.teamName || null, metadata: d.metadata || {}, display_order: idx + 1 }));
+      await RaceDriver.insertMany(driverDocs);
+    }
+      return { id: String(createdRace._id), name: createdRace.name, assignedLeagueIds, categoriesCreated: categories.length, driversCreated: raceDrivers.length };
+    } catch (err) {
+      throw err;
+    }
+  }
 
 router.post("/bootstrap/promote-admin", async (req, res) => {
   const { email, bootstrapKey } = req.body;
@@ -351,19 +334,18 @@ router.post("/bootstrap/promote-admin", async (req, res) => {
     return res.status(401).json({ error: "Invalid bootstrap credentials" });
   }
 
-  const updated = await query(
-    `UPDATE users
-     SET role = 'admin'
-     WHERE email = $1
-     RETURNING id, name, email, role`,
-    [email]
-  );
-
-  if (updated.rowCount === 0) {
-    return res.status(404).json({ error: "User not found. Register first." });
+  // promote using MongoDB if available
+  try {
+    const { connectMongo } = await import("../mongo.js");
+    const User = (await import("../models/User.js")).default;
+    await connectMongo();
+    const updated = await User.findOneAndUpdate({ email }, { role: 'admin' }, { new: true }).lean().exec();
+    if (!updated) return res.status(404).json({ error: 'User not found. Register first.' });
+    return res.json({ message: 'User promoted to admin', user: { id: String(updated._id), name: updated.name, email: updated.email, role: updated.role } });
+  } catch (err) {
+    console.error('Promote admin failed', err);
+    return res.status(500).json({ error: 'Failed to promote user to admin' });
   }
-
-  return res.json({ message: "User promoted to admin", user: updated.rows[0] });
 });
 
 router.use(authRequired, adminRequired);
@@ -392,64 +374,88 @@ router.put("/settings/pick-lock-minutes", async (req, res) => {
 
 router.post("/leagues", async (req, res) => {
   const { name, inviteCode } = req.body;
-  if (!name) {
-    return res.status(400).json({ error: "League name is required" });
-  }
+  if (!name) return res.status(400).json({ error: "League name is required" });
 
   const finalInviteCode = String(inviteCode || generateInviteCode()).trim().toUpperCase();
-  if (!finalInviteCode) {
-    return res.status(400).json({ error: "Invite code is required" });
+  if (!finalInviteCode) return res.status(400).json({ error: "Invite code is required" });
+
+  try {
+    const { connectMongo } = await import("../mongo.js");
+    const League = (await import("../models/League.js")).default;
+    const LeagueMember = (await import("../models/LeagueMember.js")).default;
+    const mongoose = (await import("mongoose")).default;
+    await connectMongo();
+
+    // ensure invite_code uniqueness
+    const exists = await League.findOne({ invite_code: finalInviteCode }).lean().exec();
+    if (exists) return res.status(409).json({ error: 'Invite code already in use' });
+
+    const created = await League.create({ name, invite_code: finalInviteCode });
+
+    // link current user as member if possible
+    let userRef = req.user && req.user.id ? req.user.id : null;
+    try {
+      if (userRef && String(userRef).match(/^[0-9a-fA-F]{24}$/)) userRef = mongoose.Types.ObjectId(String(userRef));
+    } catch (e) {
+      // leave as-is if not an ObjectId
+    }
+
+    if (userRef) {
+      try {
+        await LeagueMember.create({ league: created._id, user: userRef });
+      } catch (e) {
+        // ignore unique constraint errors
+      }
+    }
+
+    return res.status(201).json({ id: String(created._id), name: created.name, invite_code: created.invite_code, created_at: created.created_at });
+  } catch (err) {
+    console.error('Create league failed', err);
+    return res.status(500).json({ error: 'Failed to create league' });
   }
-
-  const created = await query(
-    `INSERT INTO leagues (name, invite_code)
-     VALUES ($1, $2)
-     RETURNING *`,
-    [name, finalInviteCode]
-  );
-
-  await query(
-    `INSERT INTO league_members (league_id, user_id)
-     VALUES ($1, $2)
-     ON CONFLICT DO NOTHING`,
-    [created.rows[0].id, req.user.id]
-  );
-
-  return res.status(201).json(created.rows[0]);
 });
 
 router.get("/leagues", async (_req, res) => {
-  const leagues = await query(
-    `SELECT l.id, l.name, l.invite_code, l.created_at,
-            COUNT(lm.user_id)::int AS member_count
-     FROM leagues l
-     LEFT JOIN league_members lm ON lm.league_id = l.id
-     GROUP BY l.id
-     ORDER BY l.created_at DESC`
-  );
-  return res.json(leagues.rows);
+  try {
+    const { connectMongo } = await import("../mongo.js");
+    const League = (await import("../models/League.js")).default;
+    const LeagueMember = (await import("../models/LeagueMember.js")).default;
+    await connectMongo();
+
+    const leagues = await League.find({}).sort({ created_at: -1 }).lean().exec();
+    const results = await Promise.all(
+      leagues.map(async (l) => {
+        const count = await LeagueMember.countDocuments({ league: l._id });
+        return { id: String(l._id), name: l.name, invite_code: l.invite_code, created_at: l.created_at, member_count: count };
+      })
+    );
+    return res.json(results);
+  } catch (err) {
+    console.error('List leagues failed', err);
+    return res.status(500).json({ error: 'Failed to list leagues' });
+  }
 });
 
 router.get("/leagues/:leagueId/members", async (req, res) => {
   const { leagueId } = req.params;
-  const league = await query("SELECT id, name, invite_code FROM leagues WHERE id = $1", [leagueId]);
-  if (league.rowCount === 0) {
-    return res.status(404).json({ error: "League not found" });
+  try {
+    const { connectMongo } = await import("../mongo.js");
+    const League = (await import("../models/League.js")).default;
+    const LeagueMember = (await import("../models/LeagueMember.js")).default;
+    const User = (await import("../models/User.js")).default;
+    await connectMongo();
+
+    const league = await League.findById(leagueId).lean().exec();
+    if (!league) return res.status(404).json({ error: 'League not found' });
+
+    const members = await LeagueMember.find({ league: league._id }).sort({ joined_at: 1 }).populate({ path: 'user', select: 'name email role' }).lean().exec();
+    const mapped = members.map((m) => ({ id: m.user ? String(m.user._id) : null, name: m.user ? m.user.name : null, email: m.user ? m.user.email : null, role: m.user ? m.user.role : null, joined_at: m.joined_at }));
+
+    return res.json({ league: { id: String(league._id), name: league.name, invite_code: league.invite_code }, members: mapped });
+  } catch (err) {
+    console.error('Get league members failed', err);
+    return res.status(500).json({ error: 'Failed to fetch league members' });
   }
-
-  const members = await query(
-    `SELECT u.id, u.name, u.email, u.role, lm.joined_at
-     FROM league_members lm
-     JOIN users u ON u.id = lm.user_id
-     WHERE lm.league_id = $1
-     ORDER BY lm.joined_at ASC`,
-    [leagueId]
-  );
-
-  return res.json({
-    league: league.rows[0],
-    members: members.rows
-  });
 });
 
 router.post("/sync/jolpica", async (req, res) => {
@@ -462,10 +468,11 @@ router.post("/sync/jolpica", async (req, res) => {
     }
 
     if (leagueId) {
-      const league = await query("SELECT id FROM leagues WHERE id = $1", [leagueId]);
-      if (league.rowCount === 0) {
-        return res.status(404).json({ error: "League not found" });
-      }
+      const { connectMongo } = await import("../mongo.js");
+      const League = (await import("../models/League.js")).default;
+      await connectMongo();
+      const league = await League.findById(leagueId).lean().exec();
+      if (!league) return res.status(404).json({ error: 'League not found' });
     }
 
     const summary = await syncSeasonFromJolpica({ leagueId, season: chosenSeason });
@@ -483,10 +490,11 @@ router.post("/sync/jolpica/latest-results", async (req, res) => {
       return res.status(400).json({ error: "leagueId is required" });
     }
 
-    const league = await query("SELECT id FROM leagues WHERE id = $1", [leagueId]);
-    if (league.rowCount === 0) {
-      return res.status(404).json({ error: "League not found" });
-    }
+    const { connectMongo } = await import("../mongo.js");
+    const League = (await import("../models/League.js")).default;
+    await connectMongo();
+    const league = await League.findById(leagueId).lean().exec();
+    if (!league) return res.status(404).json({ error: 'League not found' });
 
     const summary = await syncLatestRaceResultsFromJolpica({ leagueId, season });
     return res.json({ message: "Latest race result sync completed", ...summary });
@@ -518,17 +526,19 @@ router.put("/races/:raceId/drivers", async (req, res) => {
     return res.status(400).json({ error: "No valid drivers found in payload" });
   }
 
-  await query("DELETE FROM race_drivers WHERE race_id = $1", [raceId]);
+  try {
+    const { connectMongo } = await import("../mongo.js");
+    const RaceDriver = (await import("../models/RaceDriver.js")).default;
+    await connectMongo();
 
-  for (let i = 0; i < cleanDrivers.length; i += 1) {
-    await query(
-      `INSERT INTO race_drivers (race_id, driver_name, team_name, metadata, display_order)
-       VALUES ($1, $2, $3, $4, $5)`,
-      [raceId, cleanDrivers[i].name, cleanDrivers[i].teamName, cleanDrivers[i].metadata, i + 1]
-    );
+    await RaceDriver.deleteMany({ race: raceId }).exec();
+    const docs = cleanDrivers.map((d, idx) => ({ race: raceId, driver_name: d.name, team_name: d.teamName || null, metadata: d.metadata || {}, display_order: idx + 1 }));
+    if (docs.length) await RaceDriver.insertMany(docs);
+    return res.json({ message: "Race drivers updated", count: cleanDrivers.length });
+  } catch (err) {
+    console.error('Update race drivers failed', err);
+    return res.status(500).json({ error: 'Failed to update race drivers' });
   }
-
-  return res.json({ message: "Race drivers updated", count: cleanDrivers.length });
 });
 
 router.post("/bulk/races", async (req, res) => {
@@ -574,13 +584,15 @@ router.post("/bulk/race-drivers", async (req, res) => {
       const cleanDrivers = normalizeDriverRows(item.drivers);
       if (cleanDrivers.length === 0) throw new Error("drivers must include at least one valid driver");
 
-      await query("DELETE FROM race_drivers WHERE race_id = $1", [item.raceId]);
-      for (let i = 0; i < cleanDrivers.length; i += 1) {
-        await query(
-          `INSERT INTO race_drivers (race_id, driver_name, team_name, metadata, display_order)
-           VALUES ($1, $2, $3, $4, $5)`,
-          [item.raceId, cleanDrivers[i].name, cleanDrivers[i].teamName, cleanDrivers[i].metadata, i + 1]
-        );
+      try {
+        const { connectMongo } = await import("../mongo.js");
+        const RaceDriver = (await import("../models/RaceDriver.js")).default;
+        await connectMongo();
+        await RaceDriver.deleteMany({ race: item.raceId }).exec();
+        const docs = cleanDrivers.map((d, idx) => ({ race: item.raceId, driver_name: d.name, team_name: d.teamName || null, metadata: d.metadata || {}, display_order: idx + 1 }));
+        if (docs.length) await RaceDriver.insertMany(docs);
+      } catch (err) {
+        throw err;
       }
 
       updated += 1;
@@ -607,38 +619,31 @@ router.post("/bulk/results", async (req, res) => {
         throw new Error("results must be a non-empty array");
       }
 
-      const categoryRes = await query(
-        `SELECT id, name
-         FROM pick_categories
-         WHERE race_id = $1`,
-        [item.raceId]
-      );
-      const categoryIdByName = new Map(categoryRes.rows.map((row) => [row.name.toLowerCase(), row.id]));
+      try {
+        const { connectMongo } = await import("../mongo.js");
+        const PickCategory = (await import("../models/PickCategory.js")).default;
+        const Result = (await import("../models/Result.js")).default;
+        const Race = (await import("../models/Race.js")).default;
+        await connectMongo();
 
-      await query("DELETE FROM results WHERE race_id = $1", [item.raceId]);
+        const categories = await PickCategory.find({ race: item.raceId }).lean().exec();
+        const categoryIdByName = new Map(categories.map((row) => [row.name.toLowerCase(), String(row._id)]));
 
-      for (const result of item.results) {
-        const categoryName = String(result.categoryName || "").trim().toLowerCase();
-        const categoryId = categoryIdByName.get(categoryName);
-        if (!categoryId) {
-          throw new Error(`Unknown categoryName '${result.categoryName}' for race ${item.raceId}`);
+        await Result.deleteMany({ race: item.raceId }).exec();
+
+        for (const result of item.results) {
+          const categoryName = String(result.categoryName || "").trim().toLowerCase();
+          const categoryId = categoryIdByName.get(categoryName);
+          if (!categoryId) throw new Error(`Unknown categoryName '${result.categoryName}' for race ${item.raceId}`);
+
+          await Result.create({ race: item.raceId, category: categoryId, value_text: result.valueText || null, value_number: result.valueNumber ?? null });
         }
 
-        await query(
-          `INSERT INTO results (race_id, category_id, value_text, value_number)
-           VALUES ($1, $2, $3, $4)`,
-          [item.raceId, categoryId, result.valueText || null, result.valueNumber ?? null]
-        );
+        await Race.updateOne({ _id: item.raceId }, { $set: { status: 'completed', tie_breaker_value: item.tieBreakerValue || null } }).exec();
+        await calculateRaceScores(item.raceId);
+      } catch (err) {
+        throw err;
       }
-
-      await query(
-        `UPDATE races
-         SET status = 'completed', tie_breaker_value = $2
-         WHERE id = $1`,
-        [item.raceId, item.tieBreakerValue || null]
-      );
-
-      await calculateRaceScores(item.raceId);
       updated += 1;
     } catch (error) {
       failures.push({ raceId: item?.raceId || null, error: error.message });
@@ -656,148 +661,189 @@ router.patch("/races/:raceId/visibility", async (req, res) => {
     return res.status(400).json({ error: "isVisible must be a boolean" });
   }
 
-  const updated = await query(
-    `UPDATE races
-     SET is_visible = $2
-     WHERE id = $1
-     RETURNING id, name, is_visible`,
-    [raceId, isVisible]
-  );
-
-  if (updated.rowCount === 0) {
-    return res.status(404).json({ error: "Race not found" });
+  try {
+    const { connectMongo } = await import("../mongo.js");
+    const Race = (await import("../models/Race.js")).default;
+    await connectMongo();
+    const updated = await Race.findByIdAndUpdate(raceId, { is_visible: isVisible }, { new: true }).lean().exec();
+    if (!updated) return res.status(404).json({ error: 'Race not found' });
+    return res.json({ message: 'Race visibility updated', race: { id: String(updated._id), name: updated.name, is_visible: updated.is_visible } });
+  } catch (err) {
+    console.error('Update race visibility failed', err);
+    return res.status(500).json({ error: 'Failed to update race visibility' });
   }
-
-  return res.json({ message: "Race visibility updated", race: updated.rows[0] });
 });
 
 router.post("/races/:raceId/categories", async (req, res) => {
   const { raceId } = req.params;
   const { categories } = req.body;
 
-  await query("DELETE FROM pick_categories WHERE race_id = $1", [raceId]);
+  try {
+    const { connectMongo } = await import("../mongo.js");
+    const PickCategory = (await import("../models/PickCategory.js")).default;
+    await connectMongo();
 
-  for (const category of categories) {
-    await query(
-      `INSERT INTO pick_categories
-       (race_id, name, display_order, is_position_based, exact_points, partial_points)
-       VALUES ($1, $2, $3, $4, $5, $6)`,
-      [
-        raceId,
-        category.name,
-        category.displayOrder,
-        Boolean(category.isPositionBased),
-        category.exactPoints,
-        category.partialPoints || 0
-      ]
-    );
+    await PickCategory.deleteMany({ race: raceId }).exec();
+    const docs = categories.map((category) => ({
+      race: raceId,
+      name: category.name,
+      display_order: category.displayOrder,
+      is_position_based: Boolean(category.isPositionBased),
+      exact_points: category.exactPoints || 0,
+      partial_points: category.partialPoints || 0
+    }));
+    if (docs.length) await PickCategory.insertMany(docs);
+    return res.json({ message: "Categories updated" });
+  } catch (err) {
+    console.error('Update categories failed', err);
+    return res.status(500).json({ error: 'Failed to update categories' });
   }
-
-  return res.json({ message: "Categories updated" });
 });
 
 router.post("/races/:raceId/results", async (req, res) => {
   const { raceId } = req.params;
   const { results, tieBreakerValue } = req.body;
 
-  const driversRes = await query(
-    `SELECT driver_name, team_name
-     FROM race_drivers
-     WHERE race_id = $1`,
-    [raceId]
-  );
-  const validDrivers = new Set(driversRes.rows.map((row) => row.driver_name.toLowerCase()));
+  let driversResRows = [];
+  try {
+    const { connectMongo } = await import("../mongo.js");
+    const RaceDriver = (await import("../models/RaceDriver.js")).default;
+    await connectMongo();
+    driversResRows = await RaceDriver.find({ race: raceId }).lean().exec();
+  } catch (err) {
+    console.error('Fetch race drivers failed', err);
+    return res.status(500).json({ error: 'Failed to fetch race drivers' });
+  }
+
+  const validDrivers = new Set(driversResRows.map((row) => row.driver_name.toLowerCase()));
   const validTeams = new Set(
-    driversRes.rows
+    driversResRows
       .map((row) => String(row.team_name || "").trim().toLowerCase())
       .filter(Boolean)
   );
   const allowedMarginBands = new Set(["1-2", "3-4", "5+"]);
 
-  const categoriesForRaceRes = await query(
-    `SELECT id, name
-     FROM pick_categories
-     WHERE race_id = $1`,
-    [raceId]
-  );
-  const categoriesById = new Map(categoriesForRaceRes.rows.map((row) => [row.id, row]));
+  let categoriesForRaceRows = [];
+  try {
+    const { connectMongo } = await import("../mongo.js");
+    const PickCategory = (await import("../models/PickCategory.js")).default;
+    await connectMongo();
+    categoriesForRaceRows = await PickCategory.find({ race: raceId }).lean().exec();
+  } catch (err) {
+    console.error('Fetch pick categories failed', err);
+    return res.status(500).json({ error: 'Failed to fetch pick categories' });
+  }
+  const categoriesById = new Map(categoriesForRaceRows.map((row) => [String(row._id || row.id), row]));
   const teamCategoryResult = (Array.isArray(results) ? results : []).find((item) => {
     const cat = categoriesById.get(item.categoryId);
     return cat ? isTeamOfWeekendCategory(cat.name) : false;
   });
   const selectedTeamOfWeekend = String(teamCategoryResult?.valueText || "").trim().toLowerCase();
 
-  await query("DELETE FROM results WHERE race_id = $1", [raceId]);
+  // Attempt Mongo path
+  try {
+    const { connectMongo } = await import("../mongo.js");
+    const Result = (await import("../models/Result.js")).default;
+    const Race = (await import("../models/Race.js")).default;
+    await connectMongo();
 
-  for (const result of results) {
-    const category = categoriesById.get(result.categoryId);
-    if (!category) {
-      return res.status(400).json({ error: `Invalid category for race: ${result.categoryId}` });
-    }
+    await Result.deleteMany({ race: raceId }).exec();
 
-    if (isDriverSelectionCategory(category)) {
-      const selectedDriver = String(result.valueText || "").trim().toLowerCase();
-      if (!selectedDriver || !validDrivers.has(selectedDriver)) {
-        return res.status(400).json({
-          error: `Result for '${category.name}' must be selected from the race driver list`
-        });
+    for (const result of results) {
+      const category = categoriesById.get(String(result.categoryId));
+      if (!category) return res.status(400).json({ error: `Invalid category for race: ${result.categoryId}` });
+
+      if (isDriverSelectionCategory(category)) {
+        const selectedDriver = String(result.valueText || "").trim().toLowerCase();
+        if (!selectedDriver || !validDrivers.has(selectedDriver)) {
+          return res.status(400).json({ error: `Result for '${category.name}' must be selected from the race driver list` });
+        }
       }
-    }
 
-    if (isTeamBattleMarginCategory(category.name)) {
-      const selectedBand = String(result.valueText || "").trim();
-      if (!allowedMarginBands.has(selectedBand)) {
-        return res.status(400).json({
-          error: "Team Battle Winning Margin must be one of: 1-2, 3-4, 5+"
-        });
+      if (isTeamBattleMarginCategory(category.name)) {
+        const selectedBand = String(result.valueText || "").trim();
+        if (!allowedMarginBands.has(selectedBand)) {
+          return res.status(400).json({ error: "Team Battle Winning Margin must be one of: 1-2, 3-4, 5+" });
+        }
       }
-    }
 
-    if (isTeamOfWeekendCategory(category.name)) {
-      const team = String(result.valueText || "").trim().toLowerCase();
-      if (!team || !validTeams.has(team)) {
-        return res.status(400).json({
-          error: "Team of the Weekend must match one of the race teams"
-        });
+      if (isTeamOfWeekendCategory(category.name)) {
+        const team = String(result.valueText || "").trim().toLowerCase();
+        if (!team || !validTeams.has(team)) {
+          return res.status(400).json({ error: "Team of the Weekend must match one of the race teams" });
+        }
       }
-    }
 
-    if (isTeamBattleDriverCategory(category.name) && selectedTeamOfWeekend) {
-      const selectedDriver = String(result.valueText || "").trim().toLowerCase();
-      const allowedTeamDrivers = new Set(
-        driversRes.rows
-          .filter((row) => String(row.team_name || "").trim().toLowerCase() === selectedTeamOfWeekend)
-          .map((row) => row.driver_name.toLowerCase())
-      );
-
-      if (!allowedTeamDrivers.has(selectedDriver)) {
-        return res.status(400).json({
-          error: "Team Battle Winner (Driver) must belong to Team of the Weekend"
-        });
+      if (isTeamBattleDriverCategory(category.name) && selectedTeamOfWeekend) {
+        const selectedDriver = String(result.valueText || "").trim().toLowerCase();
+        const allowedTeamDrivers = new Set(
+          driversResRows
+            .filter((row) => String(row.team_name || row.team_name || "").trim().toLowerCase() === selectedTeamOfWeekend)
+            .map((row) => (row.driver_name || row.name).toLowerCase())
+        );
+        if (!allowedTeamDrivers.has(selectedDriver)) {
+          return res.status(400).json({ error: "Team Battle Winner (Driver) must belong to Team of the Weekend" });
+        }
       }
+
+      await Result.create({ race: raceId, category: result.categoryId, value_text: result.valueText || null, value_number: result.valueNumber ?? null });
     }
 
-    await query(
-      `INSERT INTO results (race_id, category_id, value_text, value_number)
-       VALUES ($1, $2, $3, $4)`,
-      [raceId, result.categoryId, result.valueText || null, result.valueNumber ?? null]
-    );
+    await Race.updateOne({ _id: raceId }, { $set: { status: 'completed', tie_breaker_value: tieBreakerValue || null } }).exec();
+    const scored = await calculateRaceScores(raceId);
+    return res.json({ message: "Results saved and scores calculated", scored });
+  } catch (err) {
+    console.error('Save race results failed', err);
+    return res.status(500).json({ error: 'Failed to save race results' });
   }
-
-  await query(
-    `UPDATE races
-     SET status = 'completed', tie_breaker_value = $2
-     WHERE id = $1`,
-    [raceId, tieBreakerValue || null]
-  );
-
-  const scored = await calculateRaceScores(raceId);
-  return res.json({ message: "Results saved and scores calculated", scored });
 });
 
 router.get("/users", async (_req, res) => {
-  const users = await query("SELECT id, name, email, role, created_at FROM users ORDER BY created_at DESC");
-  return res.json(users.rows);
+  try {
+    const { connectMongo } = await import("../mongo.js");
+    const User = (await import("../models/User.js")).default;
+    await connectMongo();
+    const users = await User.find({}, { password_hash: 0 }).sort({ created_at: -1 }).lean().exec();
+    return res.json(users.map((u) => ({ id: String(u._id), name: u.name, email: u.email, role: u.role, created_at: u.created_at })));
+  } catch (err) {
+    console.error('List users failed', err);
+    return res.status(500).json({ error: 'Failed to list users' });
+  }
+});
+
+router.patch("/users/:userId", async (req, res) => {
+  const { userId } = req.params;
+  const { name, email } = req.body || {};
+
+  if (!name && !email) {
+    return res.status(400).json({ error: "Nothing to update" });
+  }
+
+  if (email && !String(email).includes("@")) {
+    return res.status(400).json({ error: "Invalid email" });
+  }
+
+  try {
+    const { connectMongo } = await import("../mongo.js");
+    const User = (await import("../models/User.js")).default;
+    await connectMongo();
+
+    if (email) {
+      const existing = await User.findOne({ email, _id: { $ne: userId } }).lean().exec();
+      if (existing) return res.status(409).json({ error: 'Email already in use' });
+    }
+
+    const updates = {};
+    if (name) updates.name = name;
+    if (email) updates.email = email;
+
+    const updated = await User.findByIdAndUpdate(userId, updates, { new: true }).lean().exec();
+    if (!updated) return res.status(404).json({ error: 'User not found' });
+    return res.json({ id: String(updated._id), name: updated.name, email: updated.email, role: updated.role, created_at: updated.created_at });
+  } catch (err) {
+    console.error('Update user failed', err);
+    return res.status(500).json({ error: 'Failed to update user' });
+  }
 });
 
 router.patch("/users/:userId/role", async (req, res) => {
@@ -806,17 +852,17 @@ router.patch("/users/:userId/role", async (req, res) => {
   if (!["player", "admin"].includes(role)) {
     return res.status(400).json({ error: "Invalid role" });
   }
-
-  const updated = await query(
-    "UPDATE users SET role = $2 WHERE id = $1 RETURNING id, name, email, role",
-    [userId, role]
-  );
-
-  if (updated.rowCount === 0) {
-    return res.status(404).json({ error: "User not found" });
+  try {
+    const { connectMongo } = await import("../mongo.js");
+    const User = (await import("../models/User.js")).default;
+    await connectMongo();
+    const updated = await User.findByIdAndUpdate(userId, { role }, { new: true }).lean().exec();
+    if (!updated) return res.status(404).json({ error: 'User not found' });
+    return res.json({ id: String(updated._id), name: updated.name, email: updated.email, role: updated.role });
+  } catch (err) {
+    console.error('Update user role failed', err);
+    return res.status(500).json({ error: 'Failed to update user role' });
   }
-
-  return res.json(updated.rows[0]);
 });
 
 router.post("/races/:raceId/score", async (req, res) => {

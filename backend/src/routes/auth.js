@@ -2,8 +2,9 @@ import express from "express";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import { z } from "zod";
-import { query } from "../db.js";
 import { config } from "../config.js";
+import { connectMongo } from "../mongo.js";
+import User from "../models/User.js";
 
 const router = express.Router();
 
@@ -19,8 +20,9 @@ const loginSchema = z.object({
 });
 
 function signToken(user) {
+  const id = user.id || user._id || (user._id && user._id.toString());
   return jwt.sign(
-    { id: user.id, email: user.email, role: user.role },
+    { id: String(id), email: user.email, role: user.role },
     config.jwtSecret,
     { expiresIn: config.jwtExpiresIn }
   );
@@ -33,22 +35,14 @@ router.post("/register", async (req, res) => {
   }
 
   const { name, email, password } = parsed.data;
-
-  const existing = await query("SELECT id FROM users WHERE email = $1", [email]);
-  if (existing.rowCount > 0) {
-    return res.status(409).json({ error: "Email already registered" });
-  }
+  await connectMongo();
+  const existing = await User.findOne({ email }).lean().exec();
+  if (existing) return res.status(409).json({ error: "Email already registered" });
 
   const passwordHash = await bcrypt.hash(password, 10);
-  const created = await query(
-    `INSERT INTO users (name, email, password_hash)
-     VALUES ($1, $2, $3)
-     RETURNING id, name, email, role`,
-    [name, email, passwordHash]
-  );
-
-  const user = created.rows[0];
-  const token = signToken(user);
+  const created = await User.create({ name, email, password_hash: passwordHash });
+  const user = { id: String(created._id), name: created.name, email: created.email, role: created.role };
+  const token = signToken({ id: user.id, email: user.email, role: user.role });
   return res.status(201).json({ token, user });
 });
 
@@ -59,26 +53,15 @@ router.post("/login", async (req, res) => {
   }
 
   const { email, password } = parsed.data;
-  const found = await query(
-    "SELECT id, name, email, role, password_hash FROM users WHERE email = $1",
-    [email]
-  );
+  await connectMongo();
+  const found = await User.findOne({ email }).exec();
+  if (!found) return res.status(401).json({ error: 'Invalid credentials' });
 
-  if (found.rowCount === 0) {
-    return res.status(401).json({ error: "Invalid credentials" });
-  }
+  const ok = await bcrypt.compare(password, found.password_hash);
+  if (!ok) return res.status(401).json({ error: 'Invalid credentials' });
 
-  const user = found.rows[0];
-  const ok = await bcrypt.compare(password, user.password_hash);
-  if (!ok) {
-    return res.status(401).json({ error: "Invalid credentials" });
-  }
-
-  const token = signToken(user);
-  return res.json({
-    token,
-    user: { id: user.id, name: user.name, email: user.email, role: user.role }
-  });
+  const token = signToken({ id: String(found._id), email: found.email, role: found.role });
+  return res.json({ token, user: { id: String(found._id), name: found.name, email: found.email, role: found.role } });
 });
 
 router.post("/password-reset", async (_req, res) => {

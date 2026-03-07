@@ -25,7 +25,8 @@ const ADMIN_TABS = [
   { key: "sync", label: "API Sync" },
   { key: "results", label: "Results" },
   { key: "visibility", label: "Visibility" },
-  { key: "settings", label: "Settings" }
+  { key: "settings", label: "Settings" },
+  { key: "users", label: "Users" }
 ];
 
 const OPTION_CATEGORY_NAMES = {
@@ -258,6 +259,9 @@ export default function AdminPage() {
     teamOfWeekend: ""
   });
   const [predictionYear, setPredictionYear] = useState(String(currentYear));
+  const [users, setUsers] = useState([]);
+  const [editingUserId, setEditingUserId] = useState(null);
+  const [editingUserForm, setEditingUserForm] = useState({ name: "", email: "" });
   const [predictionRaceId, setPredictionRaceId] = useState("");
   const [predictionRaceDetail, setPredictionRaceDetail] = useState(null);
   const [predictionMessage, setPredictionMessage] = useState("");
@@ -375,6 +379,18 @@ export default function AdminPage() {
     loadLeagues();
     loadLockSetting();
   }, []);
+
+  useEffect(() => {
+    if (activeTab !== "users") return;
+    (async () => {
+      try {
+        const data = await apiFetch("/admin/users");
+        setUsers(data);
+      } catch (err) {
+        setMessage(String(err.message || err));
+      }
+    })();
+  }, [activeTab]);
 
   useEffect(() => {
     if (selectedLeagueId) {
@@ -1379,6 +1395,60 @@ raceId,tieBreakerValue,categoryName,valueText,valueNumber
             </button>
             {lockMessage ? <p className="text-accent-gold">{lockMessage}</p> : null}
           </form>
+        </section>
+      ) : null}
+
+      {activeTab === "users" ? (
+        <section className="card p-4 text-sm text-slate-200">
+          <h2 className="font-display text-2xl text-accent-cyan">Users</h2>
+          <p className="mt-2 text-slate-300">List of registered users. Click edit to change name or email.</p>
+          {message && <p className="text-accent-gold">{message}</p>}
+          <div className="mt-3 overflow-auto">
+            <table className="w-full text-left">
+              <thead>
+                <tr>
+                  <th className="pb-2">Name</th>
+                  <th className="pb-2">Email</th>
+                  <th className="pb-2">Role</th>
+                  <th className="pb-2">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {users.map((u) => (
+                  <tr key={u.id} className="border-t">
+                    <td className="py-2">{editingUserId === u.id ? (
+                      <input className="border p-1 w-48" value={editingUserForm.name} onChange={(e) => setEditingUserForm((s) => ({ ...s, name: e.target.value }))} />
+                    ) : u.name}</td>
+                    <td className="py-2">{editingUserId === u.id ? (
+                      <input className="border p-1 w-64" value={editingUserForm.email} onChange={(e) => setEditingUserForm((s) => ({ ...s, email: e.target.value }))} />
+                    ) : u.email}</td>
+                    <td className="py-2">{u.role}</td>
+                    <td className="py-2">
+                      {editingUserId === u.id ? (
+                        <>
+                          <button className="mr-2 tap rounded bg-accent-cyan px-2 py-1 text-sm" onClick={async () => {
+                            try {
+                              const payload = { name: editingUserForm.name, email: editingUserForm.email };
+                              const updated = await apiFetch(`/admin/users/${u.id}`, { method: "PATCH", body: JSON.stringify(payload) });
+                              setUsers((prev) => prev.map((row) => (row.id === u.id ? updated : row)));
+                              setEditingUserId(null);
+                              setEditingUserForm({ name: "", email: "" });
+                              setMessage("User updated");
+                            } catch (err) {
+                              setMessage(String(err.message || err));
+                            }
+                          }}>Save</button>
+                          <button className="tap rounded px-2 py-1 text-sm" onClick={() => { setEditingUserId(null); setEditingUserForm({ name: "", email: "" }); }}>Cancel</button>
+                        </>
+                      ) : (
+                        <button className="tap rounded px-2 py-1 text-sm" onClick={() => { setEditingUserId(u.id); setEditingUserForm({ name: u.name, email: u.email }); }}>Edit</button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </section>
       ) : null}
 

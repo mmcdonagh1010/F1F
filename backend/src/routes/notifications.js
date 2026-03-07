@@ -1,6 +1,8 @@
 import express from "express";
 import { authRequired, adminRequired } from "../middleware/auth.js";
-import { query } from "../db.js";
+import Notification from "../models/Notification.js";
+import LeagueMember from "../models/LeagueMember.js";
+import Race from "../models/Race.js";
 
 const router = express.Router();
 
@@ -10,42 +12,28 @@ router.post("/subscribe", authRequired, async (req, res) => {
     return res.status(400).json({ error: "Missing push endpoint" });
   }
 
-  await query(
-    `INSERT INTO notifications (user_id, type, payload)
-     VALUES ($1, 'push_subscribed', $2::jsonb)`,
-    [req.user.id, JSON.stringify({ endpoint, keys })]
-  );
+  await Notification.create({ user: req.user.id, type: 'push_subscribed', payload: { endpoint, keys } });
 
   return res.json({ message: "Push subscription saved" });
 });
 
 router.post("/send-deadline-reminders/:raceId", authRequired, adminRequired, async (req, res) => {
   const { raceId } = req.params;
+  const race = await Race.findById(raceId).lean().exec();
+  if (!race) return res.status(404).json({ error: 'Race not found' });
 
-  const recipients = await query(
-    `SELECT DISTINCT n.user_id, n.payload
-     FROM notifications n
-     JOIN league_members lm ON lm.user_id = n.user_id
-     JOIN races r ON r.league_id = lm.league_id
-     WHERE r.id = $1 AND n.type = 'push_subscribed'`,
-    [raceId]
-  );
+  const leagueIds = (race.leagues && race.leagues.length) ? race.leagues : (race.league ? [race.league] : []);
 
-  await query(
-    `INSERT INTO notifications (user_id, race_id, type, payload)
-     SELECT user_id, $1, 'deadline_reminder', jsonb_build_object('sent_at', NOW())
-     FROM (
-       SELECT DISTINCT n.user_id
-       FROM notifications n
-       WHERE n.type = 'push_subscribed'
-     ) sq`,
-    [raceId]
-  );
+  const memberUsers = await LeagueMember.find({ league: { $in: leagueIds } }).distinct('user').exec();
 
-  return res.json({
-    message: "Reminder job queued. Integrate web-push service in production.",
-    usersTargeted: recipients.rowCount
-  });
+  const recipients = await Notification.find({ user: { $in: memberUsers }, type: 'push_subscribed' }).exec();
+
+  if (recipients.length > 0) {
+    const docs = memberUsers.map((u) => ({ user: u, race: raceId, type: 'deadline_reminder', payload: { sent_at: new Date() } }));
+    await Notification.insertMany(docs);
+  }
+
+  return res.json({ message: "Reminder job queued. Integrate web-push service in production.", usersTargeted: recipients.length });
 });
 
 export default router;

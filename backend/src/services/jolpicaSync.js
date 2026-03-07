@@ -1,4 +1,11 @@
-﻿import { query } from "../db.js";
+﻿import Race from "../models/Race.js";
+import RaceDriver from "../models/RaceDriver.js";
+import PickCategory from "../models/PickCategory.js";
+import Result from "../models/Result.js";
+import League from "../models/League.js";
+import LeagueMember from "../models/LeagueMember.js";
+import Pick from "../models/Pick.js";
+import Score from "../models/Score.js";
 
 const JOLPICA_BASE = "https://api.jolpi.ca/ergast/f1";
 
@@ -104,67 +111,47 @@ async function fetchSeasonDriverTeams(season) {
 }
 
 async function findTargetRaceForLatestResults({ leagueId, latestRace }) {
-  const byRound = await query(
-    `SELECT id, name, race_date, external_round
-     FROM races
-     WHERE league_id = $1
-       AND race_date::date = $2::date
-       AND external_round = $3
-     LIMIT 1`,
-    [leagueId, latestRace.raceDateIso, latestRace.round]
-  );
+  // try by external_round + date
+  if (!latestRace || !latestRace.raceDateIso) return null;
+  const date = new Date(latestRace.raceDateIso);
+  const start = new Date(date);
+  start.setUTCHours(0, 0, 0, 0);
+  const end = new Date(date);
+  end.setUTCHours(23, 59, 59, 999);
 
-  if (byRound.rowCount > 0) {
-    return byRound.rows[0];
-  }
+  let race = await Race.findOne({
+    leagues: leagueId,
+    external_round: latestRace.round,
+    race_date: { $gte: start, $lte: end }
+  }).lean().exec();
 
-  const byName = await query(
-    `SELECT id, name, race_date, external_round
-     FROM races
-     WHERE league_id = $1
-       AND LOWER(name) = LOWER($2)
-     ORDER BY race_date DESC
-     LIMIT 1`,
-    [leagueId, latestRace.raceName]
-  );
+  if (race) return race;
 
-  return byName.rowCount > 0 ? byName.rows[0] : null;
+  race = await Race.findOne({
+    leagues: leagueId,
+    name: { $regex: `^${latestRace.raceName}$`, $options: 'i' }
+  }).sort({ race_date: -1 }).lean().exec();
+
+  return race || null;
 }
 
 async function replaceRaceDrivers(raceId, drivers) {
-  await query("DELETE FROM race_drivers WHERE race_id = $1", [raceId]);
-
-  for (let i = 0; i < drivers.length; i += 1) {
-    await query(
-      `INSERT INTO race_drivers (race_id, driver_name, team_name, display_order)
-       VALUES ($1, $2, $3, $4)`,
-      [raceId, drivers[i].name, drivers[i].teamName || null, i + 1]
-    );
-  }
+  await RaceDriver.deleteMany({ race: raceId }).exec();
+  if (!drivers || drivers.length === 0) return;
+  const docs = drivers.map((d, idx) => ({ race: raceId, driver_name: d.name, team_name: d.teamName || null, display_order: idx + 1 }));
+  await RaceDriver.insertMany(docs);
 }
 
 async function canRefreshRaceDrivers(raceId) {
-  const usage = await query(
-    `SELECT
-        EXISTS(SELECT 1 FROM picks WHERE race_id = $1) AS has_picks,
-        EXISTS(SELECT 1 FROM results WHERE race_id = $1) AS has_results,
-        EXISTS(SELECT 1 FROM scores WHERE race_id = $1) AS has_scores`,
-    [raceId]
-  );
-
-  const row = usage.rows[0] || {};
-  return !(row.has_picks || row.has_results || row.has_scores);
+  const hasPicks = await Pick.exists({ race: raceId });
+  const hasResults = await Result.exists({ race: raceId });
+  const hasScores = await Score.exists({ race: raceId });
+  return !(hasPicks || hasResults || hasScores);
 }
 
 async function ensureRaceLeagueMappings(raceId, leagueIds) {
-  for (const leagueId of leagueIds) {
-    await query(
-      `INSERT INTO race_leagues (race_id, league_id)
-       VALUES ($1, $2)
-       ON CONFLICT (race_id, league_id) DO NOTHING`,
-      [raceId, leagueId]
-    );
-  }
+  if (!leagueIds || leagueIds.length === 0) return;
+  await Race.updateOne({ _id: raceId }, { $addToSet: { leagues: { $each: leagueIds } } }).exec();
 }
 
 async function upsertRace({ primaryLeagueId, race, assignedLeagueIds }) {
@@ -176,42 +163,29 @@ async function upsertRace({ primaryLeagueId, race, assignedLeagueIds }) {
   const circuitName = race?.Circuit?.circuitName || "Unknown Circuit";
   const externalRound = Number(race?.round || 0) || null;
 
-  const existing = await query(
-    `SELECT id
-     FROM races
-     WHERE name = $1
-       AND race_date::date = $2::date
-     LIMIT 1`,
-    [raceName, raceDateIso]
-  );
+  const existing = await Race.findOne({ name: raceName, race_date: { $gte: new Date(new Date(raceDateIso).setUTCHours(0,0,0,0)), $lte: new Date(new Date(raceDateIso).setUTCHours(23,59,59,999)) } }).exec();
 
-  if (existing.rowCount > 0) {
-    const raceId = existing.rows[0].id;
-    await query(
-      `UPDATE races
-       SET circuit_name = $2,
-           external_round = COALESCE($5, external_round),
-           race_date = $3,
-           deadline_at = CASE WHEN status = 'upcoming' THEN $4 ELSE deadline_at END
-       WHERE id = $1`,
-      [raceId, circuitName, raceDateIso, deadlineAt, externalRound]
-    );
+  if (existing) {
+    const raceId = existing._id;
+    await Race.updateOne({ _id: raceId }, {
+      $set: {
+        circuit_name: circuitName,
+        external_round: (externalRound || existing.external_round),
+        race_date: new Date(raceDateIso),
+        deadline_at: existing.status === 'scheduled' ? new Date(deadlineAt) : existing.deadline_at
+      }
+    }).exec();
 
     await ensureRaceLeagueMappings(raceId, assignedLeagueIds);
 
     return { action: "updated", raceId };
   }
 
-  const created = await query(
-    `INSERT INTO races (league_id, name, circuit_name, external_round, race_date, deadline_at)
-     VALUES ($1, $2, $3, $4, $5, $6)
-     RETURNING id`,
-    [primaryLeagueId, raceName, circuitName, externalRound, raceDateIso, deadlineAt]
-  );
+  const created = await Race.create({ league: primaryLeagueId, leagues: assignedLeagueIds, name: raceName, circuit_name: circuitName, external_round: externalRound, race_date: new Date(raceDateIso), deadline_at: new Date(deadlineAt) });
 
-  await ensureRaceLeagueMappings(created.rows[0].id, assignedLeagueIds);
+  await ensureRaceLeagueMappings(created._id, assignedLeagueIds);
 
-  return { action: "created", raceId: created.rows[0].id };
+  return { action: "created", raceId: created._id };
 }
 
 export async function syncLatestRaceResultsFromJolpica({ leagueId, season }) {
@@ -232,16 +206,11 @@ export async function syncLatestRaceResultsFromJolpica({ leagueId, season }) {
     };
   }
 
-  const categoriesRes = await query(
-    `SELECT id, name
-     FROM pick_categories
-     WHERE race_id = $1`,
-    [targetRace.id]
-  );
+  const categories = await PickCategory.find({ race: targetRace._id }).lean().exec();
 
-  const mappedResults = categoriesRes.rows
+  const mappedResults = categories
     .map((category) => ({
-      categoryId: category.id,
+      categoryId: category._id,
       valueText: pickAutoResultForCategory(category.name, latestRace)
     }))
     .filter((item) => item.valueText);
@@ -256,23 +225,10 @@ export async function syncLatestRaceResultsFromJolpica({ leagueId, season }) {
   }
 
   for (const result of mappedResults) {
-    await query(
-      `INSERT INTO results (race_id, category_id, value_text, value_number)
-       VALUES ($1, $2, $3, NULL)
-       ON CONFLICT (race_id, category_id)
-       DO UPDATE SET value_text = EXCLUDED.value_text,
-                     value_number = EXCLUDED.value_number,
-                     created_at = NOW()`,
-      [targetRace.id, result.categoryId, result.valueText]
-    );
+    await Result.updateOne({ race: targetRace._id, category: result.categoryId }, { $set: { value_text: result.valueText, value_number: null, created_at: new Date() } }, { upsert: true }).exec();
   }
 
-  await query(
-    `UPDATE races
-     SET status = CASE WHEN status = 'upcoming' THEN 'completed' ELSE status END
-     WHERE id = $1`,
-    [targetRace.id]
-  );
+  await Race.updateOne({ _id: targetRace._id }, { $set: { status: 'completed' } }).exec();
 
   return {
     updated: true,
@@ -284,8 +240,8 @@ export async function syncLatestRaceResultsFromJolpica({ leagueId, season }) {
 }
 
 export async function syncSeasonFromJolpica({ leagueId, season }) {
-  const allLeaguesRes = await query("SELECT id FROM leagues ORDER BY created_at ASC");
-  const allLeagueIds = allLeaguesRes.rows.map((row) => row.id);
+  const allLeagues = await League.find().sort({ created_at: 1 }).select('_id').lean().exec();
+  const allLeagueIds = allLeagues.map((l) => l._id.toString());
   const assignedLeagueIds = leagueId ? [leagueId] : allLeagueIds;
   const primaryLeagueId = assignedLeagueIds[0] || null;
   if (!primaryLeagueId) {
