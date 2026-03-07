@@ -5,7 +5,7 @@ Mobile-first Fantasy Formula 1 picks application for private leagues.
 ## Stack
 - Frontend: Next.js + Tailwind CSS + PWA (`frontend/`)
 - Backend: Node.js + Express + JWT (`backend/`)
-- Database: PostgreSQL schema in `backend/src/sql/schema.sql`
+- Database: MongoDB (PostgreSQL is no longer used; a one-time migration script exists for legacy data)
 
 ## Quick Start
 
@@ -14,7 +14,9 @@ Mobile-first Fantasy Formula 1 picks application for private leagues.
 cd backend
 npm install
 cp .env.example .env
-npm run db:schema
+# configure MONGODB_URI or MONGO_URI_DEV in .env
+# if you're still running Postgres and want to migrate existing data:
+#   npm run db:migrate
 npm run dev
 ```
 
@@ -29,6 +31,20 @@ npm run dev
 Frontend runs at `http://localhost:3000` and backend runs at `http://localhost:4000`.
 
 ## Utility Scripts
+
+> **Note:** PostgreSQL has been retired. The following database scripts are
+> provided only to help migrate existing Postgres data into MongoDB; they are
+> not required for new deployments.
+
+
+
+### Database migrations
+
+- `npm run db:schema`  (legacy Postgres schema runner, no-op in Mongo world)
+- `npm run db:migrate`  perform a one‑time data migration from a running Postgres
+  instance (requires `DATABASE_URL` pointing at your Postgres server).
+
+
 
 From the repository root:
 
@@ -126,6 +142,21 @@ When running in production, set the following environment variables.
 - **Backend production URL**: BACKEND_URL_PROD = https://f1-fantasy-league-backend.onrender.com
 
 Backend env examples (set via your host's env UI):
+
+### Removing PostgreSQL dependencies
+
+Once you've migrated your data and no longer need Postgres support, remove the
+`pg` package and any related tooling:
+
+```bash
+cd backend
+npm uninstall pg
+rm -rf src/sql
+# also remove "DATABASE_URL" from backend/.env (and any other Postgres
+# configuration) so the application no longer attempts to load it
+```
+
+
 
 ```
 FRONTEND_URL_PROD=https://teal-ganache-11922e.netlify.app

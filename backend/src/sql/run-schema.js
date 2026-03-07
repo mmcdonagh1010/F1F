@@ -1,20 +1,7 @@
-import fs from "fs";
-import path from "path";
-import { fileURLToPath } from "url";
-import { query, pool } from "../db.js";
+// Schema runner deprecated after migration to MongoDB.
+// This script once applied a Postgres SQL file; it no longer performs any
+// action and is kept only for backwards-compatibility in build scripts.
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+console.log('run-schema: no-op (Postgres deprecated)');
+process.exit(0);
 
-async function main() {
-  const sql = fs.readFileSync(path.join(__dirname, "schema.sql"), "utf8");
-  await query(sql);
-  console.log("Schema applied");
-  await pool.end();
-}
-
-main().catch(async (err) => {
-  console.error(err);
-  await pool.end();
-  process.exit(1);
-});
