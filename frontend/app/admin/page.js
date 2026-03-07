@@ -408,6 +408,64 @@ export default function AdminPage() {
     }
   }
 
+  async function loadPredictionRaceDetail(raceId) {
+    if (!raceId) {
+      setPredictionRaceDetail(null);
+      return;
+    }
+
+    try {
+      const detail = await apiFetch(`/races/${raceId}`);
+      setPredictionRaceDetail(detail);
+      const selected = new Set();
+      const pointsByOption = {};
+      const raceSlots = [];
+      const sprintSlots = [];
+      const raceQualificationSlots = [];
+      const sprintQualificationSlots = [];
+
+      (detail.categories || []).forEach((category) => {
+        const optionKey = mapCategoryNameToOptionKey(category.name);
+        if (!optionKey) return;
+        selected.add(optionKey);
+
+        if (!pointsByOption[optionKey]) {
+          pointsByOption[optionKey] = {
+            exactPoints: Number(category.exact_points || 0),
+            partialPoints: Number(category.partial_points || 0)
+          };
+        }
+
+        const raceMatch = String(category.name || "").match(/^Race Result P(\d+)$/i);
+        if (raceMatch) raceSlots.push(Number(raceMatch[1]));
+        const sprintMatch = String(category.name || "").match(/^Sprint Result P(\d+)$/i);
+        if (sprintMatch) sprintSlots.push(Number(sprintMatch[1]));
+        const raceQualificationMatch = String(category.name || "").match(/^Race Qualification P(\d+)$/i);
+        if (raceQualificationMatch) raceQualificationSlots.push(Number(raceQualificationMatch[1]));
+        const sprintQualificationMatch = String(category.name || "").match(/^Sprint Qualification P(\d+)$/i);
+        if (sprintQualificationMatch) sprintQualificationSlots.push(Number(sprintQualificationMatch[1]));
+      });
+
+      setSelectedOptions(Array.from(selected));
+      setOptionPoints((prev) => ({ ...prev, ...pointsByOption }));
+      if (raceSlots.length > 0) setRacePositionSlotsInput(raceSlots.sort((a, b) => a - b).join(","));
+      if (sprintSlots.length > 0) setSprintPositionSlotsInput(sprintSlots.sort((a, b) => a - b).join(","));
+      if (raceQualificationSlots.length > 0) {
+        setRaceQualificationSlotsInput(raceQualificationSlots.sort((a, b) => a - b).join(","));
+      }
+      if (sprintQualificationSlots.length > 0) {
+        setSprintQualificationSlotsInput(sprintQualificationSlots.sort((a, b) => a - b).join(","));
+      }
+
+      const hasSprint = Array.from(selected).some((key) =>
+        ["sprintQualificationPositions", "sprintResult", "sprintPositions"].includes(key)
+      );
+      setRace((prev) => ({ ...prev, hasSprintWeekend: hasSprint }));
+    } catch {
+      setPredictionRaceDetail(null);
+    }
+  }
+
   useEffect(() => {
     const user = getStoredUser();
     if (!user) {
@@ -481,58 +539,7 @@ export default function AdminPage() {
   useEffect(() => {
     if (!isRoleResolved) return;
     if (!predictionRaceId) return;
-
-    apiFetch(`/races/${predictionRaceId}`)
-      .then((detail) => {
-        setPredictionRaceDetail(detail);
-        const selected = new Set();
-        const pointsByOption = {};
-        const raceSlots = [];
-        const sprintSlots = [];
-        const raceQualificationSlots = [];
-        const sprintQualificationSlots = [];
-
-        (detail.categories || []).forEach((category) => {
-          const optionKey = mapCategoryNameToOptionKey(category.name);
-          if (!optionKey) return;
-          selected.add(optionKey);
-
-          if (!pointsByOption[optionKey]) {
-            pointsByOption[optionKey] = {
-              exactPoints: Number(category.exact_points || 0),
-              partialPoints: Number(category.partial_points || 0)
-            };
-          }
-
-          const raceMatch = String(category.name || "").match(/^Race Result P(\d+)$/i);
-          if (raceMatch) raceSlots.push(Number(raceMatch[1]));
-          const sprintMatch = String(category.name || "").match(/^Sprint Result P(\d+)$/i);
-          if (sprintMatch) sprintSlots.push(Number(sprintMatch[1]));
-          const raceQualificationMatch = String(category.name || "").match(/^Race Qualification P(\d+)$/i);
-          if (raceQualificationMatch) raceQualificationSlots.push(Number(raceQualificationMatch[1]));
-          const sprintQualificationMatch = String(category.name || "").match(/^Sprint Qualification P(\d+)$/i);
-          if (sprintQualificationMatch) sprintQualificationSlots.push(Number(sprintQualificationMatch[1]));
-        });
-
-        setSelectedOptions(Array.from(selected));
-        setOptionPoints((prev) => ({ ...prev, ...pointsByOption }));
-        if (raceSlots.length > 0) setRacePositionSlotsInput(raceSlots.sort((a, b) => a - b).join(","));
-        if (sprintSlots.length > 0) setSprintPositionSlotsInput(sprintSlots.sort((a, b) => a - b).join(","));
-        if (raceQualificationSlots.length > 0) {
-          setRaceQualificationSlotsInput(raceQualificationSlots.sort((a, b) => a - b).join(","));
-        }
-        if (sprintQualificationSlots.length > 0) {
-          setSprintQualificationSlotsInput(sprintQualificationSlots.sort((a, b) => a - b).join(","));
-        }
-
-        const hasSprint = Array.from(selected).some((key) =>
-          ["sprintQualificationPositions", "sprintResult", "sprintPositions"].includes(key)
-        );
-        setRace((prev) => ({ ...prev, hasSprintWeekend: hasSprint }));
-      })
-      .catch(() => {
-        setPredictionRaceDetail(null);
-      });
+    loadPredictionRaceDetail(predictionRaceId);
   }, [predictionRaceId, isRoleResolved]);
 
   if (!isRoleResolved) {
@@ -756,6 +763,7 @@ export default function AdminPage() {
         `Race sync done: created ${res.created}, updated ${res.updated}, drivers/race ${res.driversPerRace}${skippedNote}`
       );
       await loadRaces();
+      await loadPredictionRaceDetail(predictionRaceId);
       await loadSyncStatus();
     } catch (err) {
       setSyncMessage(err.message);
