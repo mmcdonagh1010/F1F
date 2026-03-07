@@ -1,27 +1,35 @@
 "use client";
 
 import Link from "next/link";
+import { useEffect, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
-import { clearAuthSession } from "../lib/auth";
+import { clearAuthSession, getStoredUser } from "../lib/auth";
 
 const items = [
-  { href: "/dashboard", label: "Races" },
+  { href: "/dashboard", label: "Predictions" },
   { href: "/leaderboard", label: "Leaderboard" },
-  { href: "/admin", label: "Admin" }
+  { href: "/admin", label: "Admin", adminOnly: true }
 ];
 
 export default function BottomNav() {
   const pathname = usePathname();
   const router = useRouter();
+  const [role, setRole] = useState(null);
+
+  useEffect(() => {
+    setRole(getStoredUser()?.role || "player");
+  }, []);
 
   function logout() {
     clearAuthSession();
     router.push("/login");
   }
 
+  const visibleItems = items.filter((item) => !item.adminOnly || role === "admin");
+
   return (
     <nav className="fixed bottom-3 left-1/2 z-50 flex w-[95%] -translate-x-1/2 items-center justify-between rounded-2xl border border-white/20 bg-track-800/85 px-3 py-2 backdrop-blur">
-      {items.map((item) => {
+      {visibleItems.map((item) => {
         const active = pathname.startsWith(item.href);
         return (
           <Link

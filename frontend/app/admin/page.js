@@ -2,9 +2,11 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import Header from "../../components/Header";
 import BottomNav from "../../components/BottomNav";
 import { apiFetch } from "../../lib/api";
+import { getStoredUser } from "../../lib/auth";
 
 const PREDICTION_OPTIONS = [
   { key: "raceQualificationPositions", label: "Race Qualification Positions", sprintOnly: false, defaultExactPoints: 5, defaultPartialPoints: 1 },
@@ -215,8 +217,10 @@ function mapCategoryNameToOptionKey(categoryName) {
 }
 
 export default function AdminPage() {
+  const router = useRouter();
   const currentYear = new Date().getUTCFullYear();
   const [activeTab, setActiveTab] = useState("leagues");
+  const [isRoleResolved, setIsRoleResolved] = useState(false);
 
   const [message, setMessage] = useState("");
   const [allRaces, setAllRaces] = useState([]);
@@ -375,12 +379,29 @@ export default function AdminPage() {
   }
 
   useEffect(() => {
+    const user = getStoredUser();
+    if (!user) {
+      router.replace("/login");
+      return;
+    }
+
+    if (user.role !== "admin") {
+      router.replace("/dashboard");
+      return;
+    }
+
+    setIsRoleResolved(true);
+  }, [router]);
+
+  useEffect(() => {
+    if (!isRoleResolved) return;
     loadRaces();
     loadLeagues();
     loadLockSetting();
-  }, []);
+  }, [isRoleResolved]);
 
   useEffect(() => {
+    if (!isRoleResolved) return;
     if (activeTab !== "users") return;
     (async () => {
       try {
@@ -390,22 +411,25 @@ export default function AdminPage() {
         setMessage(String(err.message || err));
       }
     })();
-  }, [activeTab]);
+  }, [activeTab, isRoleResolved]);
 
   useEffect(() => {
+    if (!isRoleResolved) return;
     if (selectedLeagueId) {
       loadLeagueMembers(selectedLeagueId);
       setRace((prev) => ({ ...prev, leagueId: selectedLeagueId }));
     }
-  }, [selectedLeagueId]);
+  }, [selectedLeagueId, isRoleResolved]);
 
   useEffect(() => {
+    if (!isRoleResolved) return;
     if (selectedDriverRaceId) {
       loadDriversForRace(selectedDriverRaceId);
     }
-  }, [selectedDriverRaceId]);
+  }, [selectedDriverRaceId, isRoleResolved]);
 
   useEffect(() => {
+    if (!isRoleResolved) return;
     if (selectablePredictionRaces.length === 0) {
       setPredictionRaceId("");
       setPredictionRaceDetail(null);
@@ -415,9 +439,10 @@ export default function AdminPage() {
     if (!selectablePredictionRaces.find((raceRow) => raceRow.id === predictionRaceId)) {
       setPredictionRaceId(selectablePredictionRaces[0].id);
     }
-  }, [predictionRaceId, selectablePredictionRaces]);
+  }, [predictionRaceId, selectablePredictionRaces, isRoleResolved]);
 
   useEffect(() => {
+    if (!isRoleResolved) return;
     if (!predictionRaceId) return;
 
     apiFetch(`/races/${predictionRaceId}`)
@@ -471,7 +496,16 @@ export default function AdminPage() {
       .catch(() => {
         setPredictionRaceDetail(null);
       });
-  }, [predictionRaceId]);
+  }, [predictionRaceId, isRoleResolved]);
+
+  if (!isRoleResolved) {
+    return (
+      <div className="pb-24">
+        <Header title="Admin" subtitle="Checking access" />
+        <p className="card p-4 text-sm text-slate-300">Checking permissions...</p>
+      </div>
+    );
+  }
 
   function toggleOption(key) {
     setSelectedOptions((current) =>
