@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import Header from "../../components/Header";
 import BottomNav from "../../components/BottomNav";
@@ -18,7 +18,7 @@ function formatDate(value) {
   });
 }
 
-export default function LiveF1Page() {
+function LiveF1PageContent() {
   const currentYear = new Date().getUTCFullYear();
   const router = useRouter();
   const pathname = usePathname();
@@ -212,5 +212,13 @@ export default function LiveF1Page() {
 
       <BottomNav />
     </div>
+  );
+}
+
+export default function LiveF1Page() {
+  return (
+    <Suspense fallback={<div className="space-y-4 pb-24"><Header title="Live F1" subtitle="Loading live race data" /><p className="card p-4 text-sm text-slate-300">Loading live F1 data...</p><BottomNav /></div>}>
+      <LiveF1PageContent />
+    </Suspense>
   );
 }

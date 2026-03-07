@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { useParams, useSearchParams } from "next/navigation";
 import Header from "../../../../components/Header";
 import BottomNav from "../../../../components/BottomNav";
@@ -16,7 +16,7 @@ function formatDate(value) {
   });
 }
 
-export default function LiveTeamDetailPage() {
+function LiveTeamDetailPageContent() {
   const params = useParams();
   const searchParams = useSearchParams();
   const season = searchParams.get("season") || String(new Date().getUTCFullYear());
@@ -127,5 +127,13 @@ export default function LiveTeamDetailPage() {
 
       <BottomNav />
     </div>
+  );
+}
+
+export default function LiveTeamDetailPage() {
+  return (
+    <Suspense fallback={<div className="space-y-4 pb-24"><Header title="Constructor Detail" subtitle="Loading constructor snapshot" /><p className="card p-4 text-sm text-slate-300">Loading constructor detail...</p><BottomNav /></div>}>
+      <LiveTeamDetailPageContent />
+    </Suspense>
   );
 }
