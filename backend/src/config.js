@@ -39,7 +39,9 @@ const corsAllowedOrigins = parseOriginList(
   process.env.FRONTEND_URL_PROD,
   process.env.FRONTEND_URL_PRODUCTION,
   defaultFrontendUrlDebug,
+  "http://127.0.0.1:3000",
   "http://localhost:3002",
+  "http://127.0.0.1:3002",
   defaultFrontendUrlProd
 );
 
