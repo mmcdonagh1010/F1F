@@ -1,13 +1,25 @@
 import jwt from "jsonwebtoken";
 import { config } from "../config.js";
 
+function getCookieValue(cookieHeader, name) {
+  const prefix = `${name}=`;
+  return String(cookieHeader || "")
+    .split(/;\s*/)
+    .find((entry) => entry.startsWith(prefix))
+    ?.slice(prefix.length) || "";
+}
+
 export function authRequired(req, res, next) {
   const authHeader = req.headers.authorization;
-  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+  const bearerToken = authHeader && authHeader.startsWith("Bearer ")
+    ? authHeader.split(" ")[1]
+    : "";
+  const cookieToken = getCookieValue(req.headers.cookie, "f1f_token");
+  const token = bearerToken || cookieToken;
+
+  if (!token) {
     return res.status(401).json({ error: "Missing auth token" });
   }
-
-  const token = authHeader.split(" ")[1];
 
   try {
     req.user = jwt.verify(token, config.jwtSecret);
