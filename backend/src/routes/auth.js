@@ -22,7 +22,7 @@ const loginSchema = z.object({
 function signToken(user) {
   const id = user.id || user._id || (user._id && user._id.toString());
   return jwt.sign(
-    { id: String(id), email: user.email, role: user.role },
+    { id: String(id), name: user.name, email: user.email, role: user.role },
     config.jwtSecret,
     { expiresIn: config.jwtExpiresIn }
   );
@@ -42,7 +42,7 @@ router.post("/register", async (req, res) => {
   const passwordHash = await bcrypt.hash(password, 10);
   const created = await User.create({ name, email, password_hash: passwordHash });
   const user = { id: String(created._id), name: created.name, email: created.email, role: created.role };
-  const token = signToken({ id: user.id, email: user.email, role: user.role });
+  const token = signToken({ id: user.id, name: user.name, email: user.email, role: user.role });
   return res.status(201).json({ token, user });
 });
 
@@ -60,7 +60,7 @@ router.post("/login", async (req, res) => {
   const ok = await bcrypt.compare(password, found.password_hash);
   if (!ok) return res.status(401).json({ error: 'Invalid credentials' });
 
-  const token = signToken({ id: String(found._id), email: found.email, role: found.role });
+  const token = signToken({ id: String(found._id), name: found.name, email: found.email, role: found.role });
   return res.json({ token, user: { id: String(found._id), name: found.name, email: found.email, role: found.role } });
 });
 

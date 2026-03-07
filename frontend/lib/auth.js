@@ -5,6 +5,40 @@ const SESSION_EXPIRES_AT_KEY = "f1f_session_expires_at";
 export const SESSION_TIMEOUT_MS = 30 * 60 * 1000;
 export const SESSION_WARNING_MS = 60 * 1000;
 
+function decodeTokenPayload(token) {
+  if (typeof window === "undefined" || !token) return null;
+
+  try {
+    const [, payload = ""] = String(token).split(".");
+    if (!payload) return null;
+
+    const normalized = payload.replace(/-/g, "+").replace(/_/g, "/");
+    const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=");
+    const decoded = window.atob(padded);
+    const json = decodeURIComponent(
+      Array.from(decoded)
+        .map((char) => `%${char.charCodeAt(0).toString(16).padStart(2, "0")}`)
+        .join("")
+    );
+
+    return JSON.parse(json);
+  } catch {
+    return null;
+  }
+}
+
+function buildUserFromToken(token) {
+  const payload = decodeTokenPayload(token);
+  if (!payload || !payload.id || !payload.role) return null;
+
+  return {
+    id: String(payload.id),
+    name: String(payload.name || "").trim(),
+    email: String(payload.email || "").trim(),
+    role: String(payload.role || "player").trim() || "player"
+  };
+}
+
 function getCookieValue(name) {
   if (typeof document === "undefined") return "";
   const prefix = `${name}=`;
@@ -107,15 +141,25 @@ export function getStoredUser() {
   if (!token) return null;
 
   const raw = readStorageValue(USER_KEY);
-  if (!raw) return null;
+  if (!raw) {
+    const userFromToken = buildUserFromToken(token);
+    if (!userFromToken) return null;
+    writeStorageValue(USER_KEY, JSON.stringify(userFromToken));
+    return userFromToken;
+  }
 
   try {
     const parsed = JSON.parse(raw);
     writeStorageValue(USER_KEY, JSON.stringify(parsed));
     return parsed;
   } catch {
-    removeStoredAuthKeys();
-    return null;
+    const userFromToken = buildUserFromToken(token);
+    if (!userFromToken) {
+      removeStoredAuthKeys();
+      return null;
+    }
+    writeStorageValue(USER_KEY, JSON.stringify(userFromToken));
+    return userFromToken;
   }
 }
 
