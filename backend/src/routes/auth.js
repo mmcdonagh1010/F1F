@@ -90,7 +90,11 @@ router.post("/register", async (req, res) => {
     await User.deleteOne({ _id: createdUser._id }).exec();
     console.error("Failed to deliver registration verification email", {
       email: normalizedEmail,
-      message: error.message
+      message: error.message,
+      providerResponse: error.providerResponse || null,
+      emailProvider: config.emailProvider,
+      hasResendApiKey: Boolean(config.resendApiKey),
+      emailFrom: config.emailFrom || null
     });
     return res.status(502).json({ error: "Unable to send verification email right now. Please try again later." });
   }
@@ -176,7 +180,11 @@ router.post("/verify-email/resend", async (req, res) => {
     await found.save();
     console.error("Failed to resend verification email", {
       email: found.email,
-      message: error.message
+      message: error.message,
+      providerResponse: error.providerResponse || null,
+      emailProvider: config.emailProvider,
+      hasResendApiKey: Boolean(config.resendApiKey),
+      emailFrom: config.emailFrom || null
     });
     return res.status(502).json({ error: "Unable to send verification email right now. Please try again later." });
   }
@@ -213,7 +221,11 @@ router.post("/forgot-password", async (req, res) => {
     await found.save();
     console.error("Failed to send password reset email", {
       email: found.email,
-      message: error.message
+      message: error.message,
+      providerResponse: error.providerResponse || null,
+      emailProvider: config.emailProvider,
+      hasResendApiKey: Boolean(config.resendApiKey),
+      emailFrom: config.emailFrom || null
     });
     return res.status(502).json({ error: "Unable to send password reset email right now. Please try again later." });
   }
