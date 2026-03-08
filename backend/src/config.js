@@ -27,6 +27,16 @@ function normalizeEmailProvider(value) {
   return "";
 }
 
+function getNetlifyPreviewSuffix(origin) {
+  try {
+    const hostname = new URL(origin).hostname;
+    if (!hostname.endsWith(".netlify.app")) return "";
+    return `--${hostname}`;
+  } catch {
+    return "";
+  }
+}
+
 function parseOriginList(...values) {
   return Array.from(
     new Set(
@@ -63,6 +73,19 @@ const corsAllowedOrigins = parseOriginList(
   "http://127.0.0.1:3002",
   defaultFrontendUrlProd
 );
+const corsAllowedOriginSuffixes = Array.from(
+  new Set(
+    [
+      process.env.FRONTEND_URL,
+      process.env.FRONTEND_URL_DEBUG,
+      process.env.FRONTEND_URL_PROD,
+      process.env.FRONTEND_URL_PRODUCTION,
+      defaultFrontendUrlProd
+    ]
+      .map((value) => getNetlifyPreviewSuffix(value))
+      .filter(Boolean)
+  )
+);
 
 const backendUrlDebug = process.env.BACKEND_URL_DEBUG || `http://localhost:${port}`;
 const backendUrlProd = process.env.BACKEND_URL_PROD || process.env.BACKEND_URL || backendUrlDebug;
@@ -83,6 +106,7 @@ export const config = {
   frontendUrlDebug,
   frontendUrlProduction: frontendUrlProd,
   corsAllowedOrigins,
+  corsAllowedOriginSuffixes,
   backendUrlDebug,
   backendUrlProduction: backendUrlProd,
   frontendUrl: debug ? frontendUrlDebug : frontendUrlProd,
