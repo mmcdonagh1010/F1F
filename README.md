@@ -134,6 +134,16 @@ See `docs/PRODUCT_BLUEPRINT.md` for:
 - build and deployment guide
 - security and scaling strategy
 
+## AI Issue To PR Automation
+
+The repo now includes GitHub Actions automation that can turn labeled GitHub issues into reviewable pull requests.
+
+- Label an issue with `ai-fix` to trigger the AI issue workflow.
+- The workflow reads the issue, runs an AI coding agent, validates the generated changes, and opens a PR.
+- Every PR is validated again before merge.
+
+Setup details are in `docs/AI_ISSUE_AUTOMATION.md`.
+
 ## Production URLs & Deployment Environment Variables
 
 When running in production, set the following environment variables.
