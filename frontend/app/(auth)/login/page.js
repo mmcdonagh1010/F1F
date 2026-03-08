@@ -4,7 +4,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import Header from "../../../components/Header";
-import { apiFetch } from "../../../lib/api";
+import { publicApiFetch } from "../../../lib/api";
 import { storeAuthSession } from "../../../lib/auth";
 
 export default function LoginPage() {
@@ -17,7 +17,7 @@ export default function LoginPage() {
     setError("");
 
     try {
-      const res = await apiFetch("/auth/login", {
+      const res = await publicApiFetch("/auth/login", {
         method: "POST",
         body: JSON.stringify(form)
       });
@@ -48,6 +48,9 @@ export default function LoginPage() {
         />
         {error ? <p className="text-sm text-red-300">{error}</p> : null}
         <button className="tap w-full rounded-xl bg-accent-red font-bold text-white">Login</button>
+        <Link href="/verify-email" className="block text-center text-sm text-accent-cyan">
+          Need to verify your email?
+        </Link>
         <Link href="/register" className="block text-center text-sm text-accent-cyan">
           Need an account? Register
         </Link>
