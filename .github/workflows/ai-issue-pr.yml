@@ -80,6 +80,17 @@ jobs:
               per_page: 100,
             });
 
+            const filteredComments = comments.filter((comment) => {
+              const login = comment?.user?.login || comment?.author?.login || '';
+              const body = comment?.body || '';
+
+              if (login === 'github-actions[bot]' && body.includes('Opened AI fix PR for review:')) {
+                return false;
+              }
+
+              return true;
+            });
+
             const tempDir = process.env.RUNNER_TEMP || path.join(process.cwd(), 'tmp');
             fs.mkdirSync(tempDir, { recursive: true });
             const inputPath = path.join(tempDir, 'ai-issue-input.json');
@@ -94,7 +105,7 @@ jobs:
                   body: issue.body,
                   labels: (issue.labels || []).map((label) => typeof label === 'string' ? label : label.name),
                 },
-                comments,
+                comments: filteredComments,
               }, null, 2)
             );
 
@@ -129,6 +140,11 @@ jobs:
             --no-gitignore \
             --model "${AIDER_MODEL:-gpt-4.1}" \
             --message-file "${{ steps.issue.outputs.prompt_path }}"
+
+      - name: Remove AI tool artifacts
+        run: |
+          rm -f .aider.chat.history.md
+          rm -rf .aider.tags.cache.v4
 
       - name: Validate generated changes
         run: node scripts/validate-pr.mjs
