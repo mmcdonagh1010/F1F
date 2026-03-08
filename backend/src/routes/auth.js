@@ -15,6 +15,8 @@ const registerSchema = z.object({
   password: z.string().min(8)
 });
 
+const EMAIL_VERIFICATION_TTL_MS = 24 * 60 * 60 * 1000;
+
 const loginSchema = z.object({
   email: z.string().email(),
   password: z.string().min(8)
@@ -99,6 +101,13 @@ router.post("/verify-email", async (req, res) => {
   await connectMongo();
   const found = await User.findOne({ email_verification_token_hash: hashToken(token) }).exec();
   if (!found) return res.status(400).json({ error: "Verification link is invalid or expired" });
+
+  const sentAt = found.email_verification_sent_at ? new Date(found.email_verification_sent_at).getTime() : 0;
+  if (!sentAt || sentAt + EMAIL_VERIFICATION_TTL_MS < Date.now()) {
+    found.email_verification_token_hash = null;
+    await found.save();
+    return res.status(400).json({ error: "Verification link is invalid or expired" });
+  }
 
   found.email_verified_at = new Date();
   found.email_verification_token_hash = null;
