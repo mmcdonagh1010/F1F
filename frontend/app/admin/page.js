@@ -270,7 +270,7 @@ export default function AdminPage() {
     deadlineAt: "",
     hasSprintWeekend: false
   });
-  const [selectedOptions, setSelectedOptions] = useState(["raceQualificationPositions", "racePositions", "fastestLapDriver"]);
+  const [selectedOptions, setSelectedOptions] = useState([]);
   const [optionPoints, setOptionPoints] = useState(() =>
     Object.fromEntries(
       PREDICTION_OPTIONS.map((option) => [
@@ -1089,11 +1089,15 @@ export default function AdminPage() {
         method: "POST",
         body: JSON.stringify({ categories })
       });
-      await apiFetch(`/admin/races/${predictionRaceId}/predictions-live`, {
-        method: "PATCH",
-        body: JSON.stringify({ predictionsLive: true })
-      });
-      setPredictionMessage("Prediction options saved and predictions are now live for this race.");
+      if (categories.length > 0) {
+        await apiFetch(`/admin/races/${predictionRaceId}/predictions-live`, {
+          method: "PATCH",
+          body: JSON.stringify({ predictionsLive: true })
+        });
+        setPredictionMessage("Prediction options saved and predictions are now live for this race.");
+      } else {
+        setPredictionMessage("No prediction options selected. The race has been hidden and predictions remain closed.");
+      }
       await loadRaces();
       await loadPredictionRaceDetail(predictionRaceId);
     } catch (err) {

@@ -378,6 +378,7 @@ async function createRaceWeekend(payload) {
       race_date: new Date(raceDate),
       manual_deadline_at: new Date(deadlineAt),
       deadline_at: new Date(resolvedDeadlineAt || deadlineAt),
+      is_visible: categories.length > 0,
       predictions_live: false
     });
 
@@ -1064,9 +1065,16 @@ router.post("/races/:raceId/categories", async (req, res) => {
     if (!race) return res.status(404).json({ error: "Race not found" });
 
     const deadlineAt = await deriveDeadlineAtFromCategories({ race, categories: docs });
-    if (deadlineAt) {
-      await Race.updateOne({ _id: raceId }, { $set: { deadline_at: new Date(deadlineAt) } }).exec();
-    }
+    await Race.updateOne(
+      { _id: raceId },
+      {
+        $set: {
+          is_visible: docs.length > 0,
+          predictions_live: docs.length > 0 ? race.predictions_live !== false : false,
+          ...(deadlineAt ? { deadline_at: new Date(deadlineAt) } : {})
+        }
+      }
+    ).exec();
     return res.json({ message: "Categories updated" });
   } catch (err) {
     console.error('Update categories failed', err);
