@@ -575,6 +575,84 @@ router.patch("/leagues/:leagueId", async (req, res) => {
   }
 });
 
+router.delete("/leagues/:leagueId", async (req, res) => {
+  const { leagueId } = req.params;
+
+  try {
+    const { connectMongo } = await import("../mongo.js");
+    const League = (await import("../models/League.js")).default;
+    const LeagueMember = (await import("../models/LeagueMember.js")).default;
+    const Race = (await import("../models/Race.js")).default;
+    const Pick = (await import("../models/Pick.js")).default;
+    const Score = (await import("../models/Score.js")).default;
+    const PickCategory = (await import("../models/PickCategory.js")).default;
+    const RaceDriver = (await import("../models/RaceDriver.js")).default;
+    const Result = (await import("../models/Result.js")).default;
+    const Notification = (await import("../models/Notification.js")).default;
+    await connectMongo();
+
+    const league = await League.findById(leagueId).lean().exec();
+    if (!league) return res.status(404).json({ error: "League not found" });
+
+    const linkedRaces = await Race.find({ leagues: leagueId }).lean().exec();
+    const raceIdsToDelete = [];
+    const raceUpdates = [];
+
+    linkedRaces.forEach((race) => {
+      const remainingLeagueIds = (race.leagues || []).map((id) => String(id)).filter((id) => id !== String(leagueId));
+      if (remainingLeagueIds.length === 0) {
+        raceIdsToDelete.push(race._id);
+        return;
+      }
+
+      raceUpdates.push({
+        updateOne: {
+          filter: { _id: race._id },
+          update: {
+            $set: {
+              league: remainingLeagueIds[0],
+              leagues: remainingLeagueIds
+            }
+          }
+        }
+      });
+    });
+
+    if (raceUpdates.length > 0) {
+      await Race.bulkWrite(raceUpdates);
+    }
+
+    const removedMembers = await LeagueMember.deleteMany({ league: leagueId }).exec();
+    await Pick.deleteMany({ league: leagueId }).exec();
+    await Score.deleteMany({ league: leagueId }).exec();
+
+    if (raceIdsToDelete.length > 0) {
+      await Promise.all([
+        Pick.deleteMany({ race: { $in: raceIdsToDelete } }).exec(),
+        Score.deleteMany({ race: { $in: raceIdsToDelete } }).exec(),
+        PickCategory.deleteMany({ race: { $in: raceIdsToDelete } }).exec(),
+        RaceDriver.deleteMany({ race: { $in: raceIdsToDelete } }).exec(),
+        Result.deleteMany({ race: { $in: raceIdsToDelete } }).exec(),
+        Notification.deleteMany({ race: { $in: raceIdsToDelete } }).exec(),
+        Race.deleteMany({ _id: { $in: raceIdsToDelete } }).exec()
+      ]);
+    }
+
+    await League.deleteOne({ _id: leagueId }).exec();
+
+    return res.json({
+      message: "League deleted",
+      league: { id: String(league._id), name: league.name },
+      removedMemberCount: removedMembers.deletedCount || 0,
+      deletedRaceCount: raceIdsToDelete.length,
+      updatedRaceCount: raceUpdates.length
+    });
+  } catch (err) {
+    console.error('Delete league failed', err);
+    return res.status(500).json({ error: 'Failed to delete league' });
+  }
+});
+
 router.get("/leagues/:leagueId/members", async (req, res) => {
   const { leagueId } = req.params;
   try {
