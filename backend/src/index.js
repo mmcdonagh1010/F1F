@@ -16,14 +16,28 @@ const app = express();
 
 app.use(helmet());
 const allowedOrigins = new Set(config.corsAllowedOrigins || []);
+const allowedOriginSuffixes = config.corsAllowedOriginSuffixes || [];
+
+function isAllowedOrigin(origin) {
+  const normalizedOrigin = String(origin).replace(/\/$/, "");
+  if (allowedOrigins.has(normalizedOrigin)) {
+    return true;
+  }
+
+  try {
+    const hostname = new URL(normalizedOrigin).hostname;
+    return allowedOriginSuffixes.some((suffix) => hostname.endsWith(suffix));
+  } catch {
+    return false;
+  }
+}
 
 app.use(
   cors({
     origin(origin, callback) {
       if (!origin) return callback(null, true);
 
-      const normalizedOrigin = String(origin).replace(/\/$/, "");
-      if (allowedOrigins.has(normalizedOrigin)) {
+      if (isAllowedOrigin(origin)) {
         return callback(null, true);
       }
 
