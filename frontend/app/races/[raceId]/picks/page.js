@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import Header from "../../../../components/Header";
 import { apiFetch } from "../../../../lib/api";
 
@@ -257,6 +257,7 @@ function getInputMeta(category, race, values) {
 
 export default function PicksPage() {
   const { raceId } = useParams();
+  const router = useRouter();
   const [race, setRace] = useState(null);
   const [values, setValues] = useState({});
   const [savedValues, setSavedValues] = useState({});
@@ -382,6 +383,15 @@ export default function PicksPage() {
       setSaveStatus(res.status || (mode === "submit" ? "submitted" : "draft"));
       setSubmittedAt(res.submittedAt || null);
       setMessage(mode === "submit" ? "Picks submitted successfully" : "Draft saved successfully");
+      if (mode === "submit") {
+        const params = new URLSearchParams();
+        params.set("submitted", "1");
+        params.set("submittedRace", race.name);
+        params.set("year", String(new Date(race.race_date).getUTCFullYear()));
+        if (selectedLeagueId) params.set("leagueId", selectedLeagueId);
+        router.push(`/leaderboard?${params.toString()}`);
+        return;
+      }
     } catch (err) {
       setUpdatedLeagueNames([]);
       setMessage(err.message);
