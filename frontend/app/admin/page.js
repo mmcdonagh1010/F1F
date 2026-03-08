@@ -782,6 +782,18 @@ export default function AdminPage() {
     }
   }
 
+  async function setRacePredictionsLive(raceId, predictionsLive) {
+    try {
+      await apiFetch(`/admin/races/${raceId}/predictions-live`, {
+        method: "PATCH",
+        body: JSON.stringify({ predictionsLive })
+      });
+      await loadRaces();
+    } catch (err) {
+      setMessage(err.message);
+    }
+  }
+
   async function refreshFromJolpica() {
     setSyncMessage("");
     if (!race.applyToAllLeagues && !race.leagueId) {
@@ -1768,23 +1780,37 @@ raceId,tieBreakerValue,categoryName,valueText,valueNumber
       {activeTab === "visibility" ? (
         <section className="card p-4 text-sm text-slate-200">
           <h2 className="font-display text-2xl text-accent-cyan">Race Visibility</h2>
-          <p className="mt-2 text-slate-300">Hide or show races for players. Hidden races remain visible to admins.</p>
+          <p className="mt-2 text-slate-300">Hide or show races for players, and control when predictions can be submitted.</p>
           <div className="mt-3 space-y-2">
             {allRaces.map((raceRow) => (
-              <div key={raceRow.id} className="flex items-center justify-between rounded-xl border border-white/20 px-3 py-2">
+              <div key={raceRow.id} className="rounded-xl border border-white/20 px-3 py-2">
                 <div>
                   <p className="font-semibold text-slate-100">{raceRow.name}</p>
                   <p className="text-xs text-slate-400">{new Date(raceRow.deadline_at).toLocaleString()}</p>
+                  <p className="mt-1 text-xs text-slate-400">
+                    Predictions: {raceRow.predictions_live === false ? "Closed" : "Live"}
+                  </p>
                 </div>
-                <button
-                  type="button"
-                  className={`tap rounded-xl px-3 py-1 text-xs font-bold ${
-                    raceRow.is_visible ? "bg-accent-cyan text-track-900" : "bg-slate-600 text-white"
-                  }`}
-                  onClick={() => setRaceVisibility(raceRow.id, !raceRow.is_visible)}
-                >
-                  {raceRow.is_visible ? "Hide" : "Show"}
-                </button>
+                <div className="mt-3 flex flex-wrap justify-end gap-2">
+                  <button
+                    type="button"
+                    className={`tap rounded-xl px-3 py-1 text-xs font-bold ${
+                      raceRow.predictions_live === false ? "bg-slate-600 text-white" : "bg-emerald-500 text-track-900"
+                    }`}
+                    onClick={() => setRacePredictionsLive(raceRow.id, raceRow.predictions_live === false)}
+                  >
+                    {raceRow.predictions_live === false ? "Open Predictions" : "Close Predictions"}
+                  </button>
+                  <button
+                    type="button"
+                    className={`tap rounded-xl px-3 py-1 text-xs font-bold ${
+                      raceRow.is_visible ? "bg-accent-cyan text-track-900" : "bg-slate-600 text-white"
+                    }`}
+                    onClick={() => setRaceVisibility(raceRow.id, !raceRow.is_visible)}
+                  >
+                    {raceRow.is_visible ? "Hide Race" : "Show Race"}
+                  </button>
+                </div>
               </div>
             ))}
           </div>

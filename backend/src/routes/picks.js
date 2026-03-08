@@ -59,6 +59,10 @@ function getConfiguredTeamForCategory(category) {
   return String(category?.metadata?.fixedTeam || "").trim().toLowerCase();
 }
 
+function arePredictionsLive(race) {
+  return race?.predictions_live !== false;
+}
+
 function normalizeSubmittedPicks(picks, categoriesById, mode) {
   return (Array.isArray(picks) ? picks : [])
     .map((pick) => {
@@ -129,8 +133,9 @@ router.post("/:raceId", authRequired, async (req, res) => {
     return res.status(400).json({ error: "picks must be an array" });
   }
 
-  const race = await Race.findById(raceId).select('deadline_at').lean().exec();
+  const race = await Race.findById(raceId).select('deadline_at predictions_live').lean().exec();
   if (!race) return res.status(404).json({ error: 'Race not found' });
+  if (!arePredictionsLive(race)) return res.status(403).json({ error: 'Predictions are not live for this race' });
   if (getLockAt(race.deadline_at, lockMinutes).getTime() <= Date.now()) return res.status(423).json({ error: 'Picks are locked for this race' });
 
   const categories = await PickCategory.find({ race: raceId }).select('name is_position_based metadata').lean().exec();
