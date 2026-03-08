@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "nodemon src/index.js",
     "start": "node src/index.js",
+    "validate": "node scripts/validate-modules.mjs",
     "db:migrate": "node --env-file=.env scripts/migrate.js",
     "db:reset-2026": "node --env-file=.env scripts/reset-season-2026.js"
   },
