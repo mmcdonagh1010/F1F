@@ -48,6 +48,9 @@ export default function LoginPage() {
         />
         {error ? <p className="text-sm text-red-300">{error}</p> : null}
         <button className="tap w-full rounded-xl bg-accent-red font-bold text-white">Login</button>
+        <Link href="/forgot-password" className="block text-center text-sm text-accent-cyan">
+          Forgot your password?
+        </Link>
         <Link href="/verify-email" className="block text-center text-sm text-accent-cyan">
           Need to verify your email?
         </Link>
