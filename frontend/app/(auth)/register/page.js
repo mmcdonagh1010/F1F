@@ -1,23 +1,24 @@
 "use client";
 
 import { useState } from "react";
-import { useRouter } from "next/navigation";
 import Link from "next/link";
 import Header from "../../../components/Header";
-import { apiFetch } from "../../../lib/api";
-import { storeAuthSession } from "../../../lib/auth";
+import { publicApiFetch } from "../../../lib/api";
 
 export default function RegisterPage() {
-  const router = useRouter();
   const [form, setForm] = useState({ name: "", email: "", password: "", inviteCode: "" });
   const [error, setError] = useState("");
+  const [success, setSuccess] = useState("");
+  const [verificationPreviewUrl, setVerificationPreviewUrl] = useState("");
 
   async function submit(e) {
     e.preventDefault();
     setError("");
+    setSuccess("");
+    setVerificationPreviewUrl("");
 
     try {
-      const res = await apiFetch("/auth/register", {
+      const res = await publicApiFetch("/auth/register", {
         method: "POST",
         body: JSON.stringify({
           name: form.name,
@@ -25,16 +26,10 @@ export default function RegisterPage() {
           password: form.password
         })
       });
-      storeAuthSession(res.token, res.user);
-
-      if (form.inviteCode.trim()) {
-        await apiFetch("/leagues/join", {
-          method: "POST",
-          body: JSON.stringify({ inviteCode: form.inviteCode.trim().toUpperCase() })
-        });
-      }
-
-      router.push("/dashboard");
+      setSuccess(form.inviteCode.trim()
+        ? `${res.message} After you verify and log in, join your league with invite code ${form.inviteCode.trim().toUpperCase()}.`
+        : res.message);
+      setVerificationPreviewUrl(res.verificationPreviewUrl || "");
     } catch (err) {
       setError(err.message);
     }
@@ -73,6 +68,12 @@ export default function RegisterPage() {
           onChange={(e) => setForm({ ...form, inviteCode: e.target.value })}
         />
         {error ? <p className="text-sm text-red-300">{error}</p> : null}
+        {success ? <p className="text-sm text-emerald-200">{success}</p> : null}
+        {verificationPreviewUrl ? (
+          <Link href={verificationPreviewUrl} className="block text-center text-sm text-accent-cyan underline">
+            Open verification preview
+          </Link>
+        ) : null}
         <button className="tap w-full rounded-xl bg-accent-red font-bold text-white">Register</button>
         <Link href="/login" className="block text-center text-sm text-accent-cyan">
           Already registered? Login
