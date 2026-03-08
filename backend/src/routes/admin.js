@@ -4,6 +4,7 @@ import crypto from "crypto";
 import { authRequired, adminRequired } from "../middleware/auth.js";
 import { calculateRaceScores } from "../services/scoring.js";
 import { syncCompletedRaceResultsFromJolpica, syncLatestRaceResultsFromJolpica, syncSeasonFromJolpica } from "../services/jolpicaSync.js";
+import { deriveDeadlineAtFromCategories } from "../services/raceDeadline.js";
 import { config } from "../config.js";
 import { getJolpicaAutoSyncRuntimeStatus } from "../jobs/jolpicaAutoSync.js";
 import {
@@ -350,8 +351,6 @@ async function createRaceWeekend(payload) {
     if (assignedLeagueIds.length === 0) throw new Error('Select at least one valid league for this race');
     const primaryLeagueId = assignedLeagueIds[0];
 
-    const createdRace = await Race.create({ league: primaryLeagueId, leagues: assignedLeagueIds, name, circuit_name: circuitName, external_round: roundValue, race_date: new Date(raceDate), deadline_at: new Date(deadlineAt) });
-
     const categories = buildRaceCategories(
       predictionOptions,
       Boolean(hasSprintWeekend),
@@ -359,6 +358,27 @@ async function createRaceWeekend(payload) {
       positionSlotsByOption && typeof positionSlotsByOption === "object" ? positionSlotsByOption : {},
       pointOverrides && typeof pointOverrides === "object" ? pointOverrides : {}
     );
+
+    const resolvedDeadlineAt = await deriveDeadlineAtFromCategories({
+      race: {
+        external_round: roundValue,
+        race_date: new Date(raceDate),
+        manual_deadline_at: new Date(deadlineAt),
+        deadline_at: new Date(deadlineAt)
+      },
+      categories
+    });
+
+    const createdRace = await Race.create({
+      league: primaryLeagueId,
+      leagues: assignedLeagueIds,
+      name,
+      circuit_name: circuitName,
+      external_round: roundValue,
+      race_date: new Date(raceDate),
+      manual_deadline_at: new Date(deadlineAt),
+      deadline_at: new Date(resolvedDeadlineAt || deadlineAt)
+    });
 
     const raceDrivers = normalizeDriverRows(drivers);
 
@@ -755,6 +775,7 @@ router.patch("/races/:raceId", async (req, res) => {
     const { connectMongo } = await import("../mongo.js");
     const League = (await import("../models/League.js")).default;
     const Race = (await import("../models/Race.js")).default;
+    const PickCategory = (await import("../models/PickCategory.js")).default;
     await connectMongo();
 
     const allLeagues = await League.find().sort({ created_at: 1 }).select("_id").lean().exec();
@@ -777,6 +798,17 @@ router.patch("/races/:raceId", async (req, res) => {
       return res.status(400).json({ error: "Select at least one valid league for this race" });
     }
 
+    const existingCategories = await PickCategory.find({ race: raceId }).lean().exec();
+    const resolvedDeadlineAt = await deriveDeadlineAtFromCategories({
+      race: {
+        external_round: roundValue,
+        race_date: new Date(raceDate),
+        manual_deadline_at: new Date(deadlineAt),
+        deadline_at: new Date(deadlineAt)
+      },
+      categories: existingCategories
+    });
+
     const updated = await Race.findByIdAndUpdate(
       raceId,
       {
@@ -786,7 +818,8 @@ router.patch("/races/:raceId", async (req, res) => {
         circuit_name: String(circuitName).trim(),
         external_round: roundValue,
         race_date: new Date(raceDate),
-        deadline_at: new Date(deadlineAt)
+        manual_deadline_at: new Date(deadlineAt),
+        deadline_at: new Date(resolvedDeadlineAt || deadlineAt)
       },
       { new: true }
     ).lean().exec();
@@ -979,6 +1012,7 @@ router.post("/races/:raceId/categories", async (req, res) => {
   try {
     const { connectMongo } = await import("../mongo.js");
     const PickCategory = (await import("../models/PickCategory.js")).default;
+    const Race = (await import("../models/Race.js")).default;
     await connectMongo();
 
     await PickCategory.deleteMany({ race: raceId }).exec();
@@ -992,6 +1026,13 @@ router.post("/races/:raceId/categories", async (req, res) => {
       partial_points: category.partialPoints || 0
     }));
     if (docs.length) await PickCategory.insertMany(docs);
+    const race = await Race.findById(raceId).lean().exec();
+    if (!race) return res.status(404).json({ error: "Race not found" });
+
+    const deadlineAt = await deriveDeadlineAtFromCategories({ race, categories: docs });
+    if (deadlineAt) {
+      await Race.updateOne({ _id: raceId }, { $set: { deadline_at: new Date(deadlineAt) } }).exec();
+    }
     return res.json({ message: "Categories updated" });
   } catch (err) {
     console.error('Update categories failed', err);

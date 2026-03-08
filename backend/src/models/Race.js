@@ -9,6 +9,7 @@ const RaceSchema = new Schema({
   circuit_name: { type: String },
   external_round: { type: Number },
   race_date: { type: Date },
+  manual_deadline_at: { type: Date },
   deadline_at: { type: Date },
   status: { type: String, enum: ['scheduled','completed','cancelled'], default: 'scheduled' },
   is_visible: { type: Boolean, default: true },
