@@ -20,7 +20,9 @@ export async function publicApiFetch(path, options = {}) {
 
   if (!res.ok) {
     const payload = await res.json().catch(() => ({ error: "Request failed" }));
-    throw new Error(payload.error || "Request failed");
+    const error = new Error(payload.error || "Request failed");
+    error.data = payload;
+    throw error;
   }
 
   return res.json();
@@ -52,7 +54,9 @@ export async function apiFetch(path, options = {}) {
       }
     }
     const payload = await res.json().catch(() => ({ error: "Request failed" }));
-    throw new Error(payload.error || "Request failed");
+    const error = new Error(payload.error || "Request failed");
+    error.data = payload;
+    throw error;
   }
 
   return res.json();
