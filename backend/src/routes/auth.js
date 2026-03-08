@@ -22,6 +22,15 @@ const loginSchema = z.object({
   password: z.string().min(8)
 });
 
+const forgotPasswordSchema = z.object({
+  email: z.string().email()
+});
+
+const resetPasswordSchema = z.object({
+  token: z.string().min(1),
+  password: z.string().min(8)
+});
+
 function signToken(user) {
   const id = user.id || user._id || (user._id && user._id.toString());
   return jwt.sign(
@@ -142,10 +151,49 @@ router.post("/verify-email/resend", async (req, res) => {
   });
 });
 
-router.post("/password-reset", async (_req, res) => {
+router.post("/forgot-password", async (req, res) => {
+  const parsed = forgotPasswordSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: parsed.error.flatten() });
+  }
+
+  const email = String(parsed.data.email).trim().toLowerCase();
+  await connectMongo();
+  const found = await User.findOne({ email }).exec();
+
+  if (!found || !found.email_verified_at) {
+    return res.json({ message: "If that account exists, a password reset link has been prepared." });
+  }
+
+  const reset = createVerificationTokenFields();
+  found.password_reset_token_hash = reset.tokenHash;
+  found.password_reset_expires_at = new Date(Date.now() + 60 * 60 * 1000);
+  await found.save();
+
   return res.json({
-    message: "Password reset endpoint placeholder. Integrate with email provider in production."
+    message: "Password reset link prepared.",
+    resetPreviewUrl: buildDebugPreviewUrl("/reset-password", reset.rawToken)
   });
+});
+
+router.post("/reset-password", async (req, res) => {
+  const parsed = resetPasswordSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: parsed.error.flatten() });
+  }
+
+  await connectMongo();
+  const found = await User.findOne({ password_reset_token_hash: hashToken(parsed.data.token) }).exec();
+  if (!found || !found.password_reset_expires_at || found.password_reset_expires_at.getTime() < Date.now()) {
+    return res.status(400).json({ error: "Password reset link is invalid or expired" });
+  }
+
+  found.password_hash = await bcrypt.hash(parsed.data.password, 10);
+  found.password_reset_token_hash = null;
+  found.password_reset_expires_at = null;
+  await found.save();
+
+  return res.json({ message: "Password updated. You can now log in." });
 });
 
 export default router;
