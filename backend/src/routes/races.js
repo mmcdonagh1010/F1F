@@ -29,6 +29,10 @@ function serializeDriver(driver) {
   };
 }
 
+function arePredictionsLive(race) {
+  return race?.predictions_live !== false;
+}
+
 router.get("/", authRequired, async (req, res) => {
   const lockMinutes = await getPickLockMinutesBeforeDeadline();
   const role = req.user.role || "player";
@@ -57,6 +61,7 @@ router.get("/", authRequired, async (req, res) => {
       deadline_at: race.deadline_at,
       status: race.status || null,
       is_visible: Boolean(race.is_visible),
+      predictions_live: arePredictionsLive(race),
       lock_at: lockAt,
       is_locked: new Date(lockAt).getTime() <= Date.now()
     };
@@ -102,6 +107,7 @@ router.get("/:raceId", authRequired, async (req, res) => {
     deadline_at: raceDoc.deadline_at,
     status: raceDoc.status || null,
     is_visible: Boolean(raceDoc.is_visible),
+    predictions_live: arePredictionsLive(raceDoc),
     available_leagues: availableLeagues,
     lock_at: lockAt,
     is_locked: new Date(lockAt).getTime() <= Date.now(),

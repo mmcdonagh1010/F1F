@@ -836,7 +836,8 @@ router.patch("/races/:raceId", async (req, res) => {
       race_date: updated.race_date,
       deadline_at: updated.deadline_at,
       status: updated.status || null,
-      is_visible: Boolean(updated.is_visible)
+      is_visible: Boolean(updated.is_visible),
+      predictions_live: updated.predictions_live !== false
     });
   } catch (err) {
     console.error("Update race failed", err);
@@ -1002,6 +1003,38 @@ router.patch("/races/:raceId/visibility", async (req, res) => {
   } catch (err) {
     console.error('Update race visibility failed', err);
     return res.status(500).json({ error: 'Failed to update race visibility' });
+  }
+});
+
+router.patch("/races/:raceId/predictions-live", async (req, res) => {
+  const { raceId } = req.params;
+  const { predictionsLive } = req.body;
+
+  if (typeof predictionsLive !== "boolean") {
+    return res.status(400).json({ error: "predictionsLive must be a boolean" });
+  }
+
+  try {
+    const { connectMongo } = await import("../mongo.js");
+    const Race = (await import("../models/Race.js")).default;
+    await connectMongo();
+    const updated = await Race.findByIdAndUpdate(
+      raceId,
+      { predictions_live: predictionsLive },
+      { new: true }
+    ).lean().exec();
+    if (!updated) return res.status(404).json({ error: 'Race not found' });
+    return res.json({
+      message: 'Race prediction availability updated',
+      race: {
+        id: String(updated._id),
+        name: updated.name,
+        predictions_live: updated.predictions_live !== false
+      }
+    });
+  } catch (err) {
+    console.error('Update race prediction availability failed', err);
+    return res.status(500).json({ error: 'Failed to update race prediction availability' });
   }
 });
 

@@ -328,9 +328,11 @@ export default function PicksPage() {
 
   const sections = useMemo(() => buildPredictionSections(race?.categories || []), [race]);
   const hasUnsavedChanges = useMemo(() => JSON.stringify(values) !== JSON.stringify(savedValues), [values, savedValues]);
+  const arePredictionsLive = race?.predictions_live !== false;
+  const isEditingDisabled = isLocked || !arePredictionsLive;
 
   useEffect(() => {
-    if (isLocked || !hasUnsavedChanges) return undefined;
+    if (isEditingDisabled || !hasUnsavedChanges) return undefined;
 
     const handleBeforeUnload = (event) => {
       event.preventDefault();
@@ -339,9 +341,13 @@ export default function PicksPage() {
 
     window.addEventListener("beforeunload", handleBeforeUnload);
     return () => window.removeEventListener("beforeunload", handleBeforeUnload);
-  }, [hasUnsavedChanges, isLocked]);
+  }, [hasUnsavedChanges, isEditingDisabled]);
 
   async function savePicks(mode) {
+    if (!arePredictionsLive) {
+      setMessage("Predictions are not live for this race yet.");
+      return;
+    }
     if (isLocked) {
       setMessage("Picks are locked for this race. You can view your submitted picks below.");
       return;
@@ -424,7 +430,7 @@ export default function PicksPage() {
           <select
             className="tap w-full rounded-xl border border-white/30 bg-white/10 px-3 text-white"
             value={values[category.id] || ""}
-            disabled={isLocked}
+            disabled={isEditingDisabled}
             onChange={(e) => setValues({ ...values, [category.id]: e.target.value })}
           >
             <option value="" className="bg-track-900 text-slate-300">
@@ -444,7 +450,7 @@ export default function PicksPage() {
           <select
             className="tap w-full rounded-xl border border-white/30 bg-white/10 px-3 text-white"
             value={values[category.id] || ""}
-            disabled={isLocked}
+            disabled={isEditingDisabled}
             onChange={(e) => setValues({ ...values, [category.id]: e.target.value })}
           >
             <option value="" className="bg-track-900 text-slate-300">Select position</option>
@@ -458,7 +464,7 @@ export default function PicksPage() {
           <select
             className="tap w-full rounded-xl border border-white/30 bg-white/10 px-3 text-white"
             value={values[category.id] || ""}
-            disabled={isLocked}
+            disabled={isEditingDisabled}
             onChange={(e) => setValues({ ...values, [category.id]: e.target.value })}
           >
             <option value="" className="bg-track-900 text-slate-300">Select team</option>
@@ -472,7 +478,7 @@ export default function PicksPage() {
           <select
             className="tap w-full rounded-xl border border-white/30 bg-white/10 px-3 text-white"
             value={values[category.id] || ""}
-            disabled={isLocked}
+            disabled={isEditingDisabled}
             onChange={(e) => setValues({ ...values, [category.id]: e.target.value })}
           >
             <option value="" className="bg-track-900 text-slate-300">Select gap</option>
@@ -489,7 +495,7 @@ export default function PicksPage() {
             inputMode="text"
             placeholder={meta.placeholder}
             value={values[category.id] || ""}
-            readOnly={isLocked}
+            readOnly={isEditingDisabled}
             onChange={(e) => setValues({ ...values, [category.id]: e.target.value })}
           />
         )}
@@ -502,17 +508,22 @@ export default function PicksPage() {
     <div className="pb-24">
       <Header title={race.name} subtitle="Lock in your predictions" />
       <form className="card space-y-4 p-5">
+        {!arePredictionsLive ? (
+          <p className="rounded-xl border border-slate-300/30 bg-slate-500/10 p-2 text-sm text-slate-200">
+            Predictions are not live for this race yet. You can review the categories, but pick selection is disabled until an admin opens them.
+          </p>
+        ) : null}
         {isLocked ? (
           <p className="rounded-xl border border-amber-300/40 bg-amber-500/15 p-2 text-sm text-amber-200">
             Picks are locked because the deadline window is now closed. You can only view picks.
           </p>
         ) : null}
-        {!isLocked && hasUnsavedChanges ? (
+        {!isEditingDisabled && hasUnsavedChanges ? (
           <p className="rounded-xl border border-sky-300/30 bg-sky-500/10 p-2 text-sm text-sky-100">
             You have unsaved prediction changes.
           </p>
         ) : null}
-        {!isLocked && saveStatus === "submitted" ? (
+        {!isEditingDisabled && saveStatus === "submitted" ? (
           <p className="rounded-xl border border-emerald-300/30 bg-emerald-500/10 p-2 text-sm text-emerald-100">
             Final picks submitted{submittedAt ? ` on ${new Date(submittedAt).toLocaleString()}` : ""}. You can still update them until the lock window closes.
           </p>
@@ -526,7 +537,7 @@ export default function PicksPage() {
             <select
               className="tap w-full rounded-xl border border-white/30 bg-white/10 px-3 text-white"
               value={selectedLeagueId}
-              disabled={isLocked || (applyToAllLeagues && availableLeagues.length > 1)}
+              disabled={isEditingDisabled || (applyToAllLeagues && availableLeagues.length > 1)}
               onChange={(e) => setSelectedLeagueId(e.target.value)}
             >
               {availableLeagues.map((league) => (
@@ -540,7 +551,7 @@ export default function PicksPage() {
                 <input
                   type="checkbox"
                   checked={applyToAllLeagues}
-                  disabled={isLocked}
+                  disabled={isEditingDisabled}
                   onChange={(e) => setApplyToAllLeagues(e.target.checked)}
                 />
                 Apply these picks to all my leagues for this race
@@ -574,7 +585,7 @@ export default function PicksPage() {
             </section>
           );
         })}
-        {!isLocked ? (
+        {!isEditingDisabled ? (
           <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
             <button
               type="button"

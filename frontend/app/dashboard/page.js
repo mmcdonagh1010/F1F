@@ -47,11 +47,11 @@ export default function DashboardPage() {
     }
   }
 
-  const upcomingRaces = races
-    .filter((race) => new Date(race.deadline_at).getTime() > Date.now())
+  const scheduledRaces = races
+    .filter((race) => race.status !== "completed")
     .sort((a, b) => new Date(a.deadline_at).getTime() - new Date(b.deadline_at).getTime());
 
-  const displayedRaces = showAllUpcoming ? upcomingRaces : upcomingRaces.slice(0, 1);
+  const displayedRaces = showAllUpcoming ? scheduledRaces : scheduledRaces.slice(0, 1);
 
   return (
     <div className="space-y-4 pb-24">
@@ -79,13 +79,13 @@ export default function DashboardPage() {
         </form>
       </section>
 
-      {upcomingRaces.length > 1 ? (
+      {scheduledRaces.length > 1 ? (
         <button
           type="button"
           className="tap rounded-xl border border-white/30 px-3 py-2 text-sm font-semibold text-slate-100"
           onClick={() => setShowAllUpcoming((v) => !v)}
         >
-          {showAllUpcoming ? "Show nearest deadline only" : "Show all upcoming races"}
+          {showAllUpcoming ? "Show nearest race only" : "Show all races"}
         </button>
       ) : null}
 
@@ -94,15 +94,32 @@ export default function DashboardPage() {
           <p className="font-display text-2xl text-accent-cyan">{race.name}</p>
           <p className="text-sm text-slate-300">{race.circuit_name}</p>
           <p className="mt-2 text-xs text-slate-400">Deadline: {new Date(race.deadline_at).toLocaleString()}</p>
-          <Link
-            href={`/races/${race.id}/picks`}
-            className="tap mt-3 block rounded-xl bg-accent-red px-3 py-2 text-center font-bold text-white"
-          >
-            Make Picks
-          </Link>
+          <p className="mt-1 text-xs text-slate-400">
+            {race.predictions_live === false
+              ? "Predictions are not live yet."
+              : race.is_locked
+              ? "Predictions are closed for this race."
+              : "Predictions are live."}
+          </p>
+          {race.predictions_live === false || race.is_locked ? (
+            <button
+              type="button"
+              disabled
+              className="tap mt-3 block w-full cursor-not-allowed rounded-xl bg-slate-600 px-3 py-2 text-center font-bold text-slate-200 opacity-70"
+            >
+              Make Picks
+            </button>
+          ) : (
+            <Link
+              href={`/races/${race.id}/picks`}
+              className="tap mt-3 block rounded-xl bg-accent-red px-3 py-2 text-center font-bold text-white"
+            >
+              Make Picks
+            </Link>
+          )}
         </article>
       ))}
-      {displayedRaces.length === 0 ? <p className="card p-4 text-sm text-slate-300">No upcoming races available.</p> : null}
+      {displayedRaces.length === 0 ? <p className="card p-4 text-sm text-slate-300">No races available.</p> : null}
 
       <LiveF1Panel />
 
