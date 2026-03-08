@@ -6,6 +6,7 @@ import League from "../models/League.js";
 import Pick from "../models/Pick.js";
 import Score from "../models/Score.js";
 import { calculateRaceScores } from "./scoring.js";
+import { fetchRaceSchedule } from "./raceDeadline.js";
 
 const JOLPICA_BASE = "https://api.jolpi.ca/ergast/f1";
 
@@ -24,13 +25,23 @@ function parseRaceDateTime(race) {
   return new Date(`${date}T${time}`).toISOString();
 }
 
-function parseDeadlineAt(raceDateIso, race) {
+async function parseDeadlineAt(raceDateIso, race) {
+  const round = Number(race?.round || 0);
+  const raceDate = new Date(raceDateIso);
+  const season = Number.isNaN(raceDate.getTime()) ? null : raceDate.getUTCFullYear();
+
+  if (season && Number.isInteger(round) && round > 0) {
+    try {
+      const schedule = await fetchRaceSchedule({ season, round });
+      if (schedule?.qualifyingDateIso) return schedule.qualifyingDateIso;
+    } catch {
+      // Fall back to the schedule embedded in the sync payload.
+    }
+  }
+
   const qualifyingDate = race?.Qualifying?.date;
   const qualifyingTime = race?.Qualifying?.time || "00:00:00Z";
-
-  if (qualifyingDate) {
-    return new Date(`${qualifyingDate}T${qualifyingTime}`).toISOString();
-  }
+  if (qualifyingDate) return new Date(`${qualifyingDate}T${qualifyingTime}`).toISOString();
 
   return raceDateIso;
 }
@@ -346,7 +357,7 @@ async function upsertRace({ primaryLeagueId, race, assignedLeagueIds }) {
   const raceDateIso = parseRaceDateTime(race);
   if (!raceDateIso) return { action: "skipped", raceId: null };
 
-  const deadlineAt = parseDeadlineAt(raceDateIso, race);
+  const deadlineAt = await parseDeadlineAt(raceDateIso, race);
   const raceName = race.raceName;
   const circuitName = race?.Circuit?.circuitName || "Unknown Circuit";
   const externalRound = Number(race?.round || 0) || null;
@@ -379,6 +390,7 @@ async function upsertRace({ primaryLeagueId, race, assignedLeagueIds }) {
     circuit_name: circuitName,
     external_round: externalRound,
     race_date: new Date(raceDateIso),
+    manual_deadline_at: null,
     deadline_at: new Date(deadlineAt)
   });
 
