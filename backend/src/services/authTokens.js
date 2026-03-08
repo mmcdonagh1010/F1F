@@ -24,3 +24,8 @@ export function buildDebugPreviewUrl(path, token) {
   if (!config.debug || !token) return null;
   return buildFrontendAuthUrl(path, { token });
 }
+
+export function buildFrontendTokenUrl(path, token) {
+  if (!token) return null;
+  return buildFrontendAuthUrl(path, { token });
+}

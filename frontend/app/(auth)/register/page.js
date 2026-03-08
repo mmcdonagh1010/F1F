@@ -10,6 +10,7 @@ export default function RegisterPage() {
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
   const [verificationPreviewUrl, setVerificationPreviewUrl] = useState("");
+  const normalizedEmail = form.email.trim().toLowerCase();
 
   async function submit(e) {
     e.preventDefault();
@@ -26,9 +27,12 @@ export default function RegisterPage() {
           password: form.password
         })
       });
+      const baseMessage = res.verificationPreviewUrl
+        ? `${res.message} This environment is using a preview link instead of outbound email, so use the verification link below.`
+        : res.message;
       setSuccess(form.inviteCode.trim()
-        ? `${res.message} After you verify and log in, join your league with invite code ${form.inviteCode.trim().toUpperCase()}.`
-        : res.message);
+        ? `${baseMessage} After you verify and log in, join your league with invite code ${form.inviteCode.trim().toUpperCase()}.`
+        : baseMessage);
       setVerificationPreviewUrl(res.verificationPreviewUrl || "");
     } catch (err) {
       setError(err.message);
@@ -69,6 +73,11 @@ export default function RegisterPage() {
         />
         {error ? <p className="text-sm text-red-300">{error}</p> : null}
         {success ? <p className="text-sm text-emerald-200">{success}</p> : null}
+        {normalizedEmail ? (
+          <Link href={`/verify-email?email=${encodeURIComponent(normalizedEmail)}`} className="block text-center text-sm text-accent-cyan">
+            Open verification page
+          </Link>
+        ) : null}
         {verificationPreviewUrl ? (
           <Link href={verificationPreviewUrl} className="block text-center text-sm text-accent-cyan underline">
             Open verification preview

@@ -11,10 +11,12 @@ export default function LoginPage() {
   const router = useRouter();
   const [form, setForm] = useState({ email: "", password: "" });
   const [error, setError] = useState("");
+  const [verificationEmail, setVerificationEmail] = useState("");
 
   async function submit(e) {
     e.preventDefault();
     setError("");
+    setVerificationEmail("");
 
     try {
       const res = await publicApiFetch("/auth/login", {
@@ -24,6 +26,11 @@ export default function LoginPage() {
       storeAuthSession(res.token, res.user);
       router.push("/dashboard");
     } catch (err) {
+      if (err.data?.verificationRequired) {
+        setVerificationEmail(form.email.trim().toLowerCase());
+        setError("Verify your email before logging in. Open the verification page below to use your verification link or resend one.");
+        return;
+      }
       setError(err.message);
     }
   }
@@ -47,6 +54,11 @@ export default function LoginPage() {
           required
         />
         {error ? <p className="text-sm text-red-300">{error}</p> : null}
+        {verificationEmail ? (
+          <Link href={`/verify-email?email=${encodeURIComponent(verificationEmail)}`} className="block text-center text-sm text-accent-cyan underline">
+            Verify this account
+          </Link>
+        ) : null}
         <button className="tap w-full rounded-xl bg-accent-red font-bold text-white">Login</button>
         <Link href="/forgot-password" className="block text-center text-sm text-accent-cyan">
           Forgot your password?
