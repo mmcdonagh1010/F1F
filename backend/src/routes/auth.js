@@ -5,7 +5,13 @@ import { z } from "zod";
 import { config } from "../config.js";
 import { connectMongo } from "../mongo.js";
 import User from "../models/User.js";
-import { buildDebugPreviewUrl, createRawToken, hashToken } from "../services/authTokens.js";
+import { createRawToken, hashToken } from "../services/authTokens.js";
+import {
+  getPasswordResetPreparedMessage,
+  getVerificationEmailPreparedMessage,
+  sendPasswordResetEmail,
+  sendVerificationEmail
+} from "../services/authEmail.js";
 
 const router = express.Router();
 
@@ -63,18 +69,31 @@ router.post("/register", async (req, res) => {
 
   const passwordHash = await bcrypt.hash(password, 10);
   const verification = createVerificationTokenFields();
-  await User.create({
+  const createdUser = await User.create({
     name,
     email: normalizedEmail,
     password_hash: passwordHash,
     email_verification_token_hash: verification.tokenHash,
     email_verification_sent_at: verification.sentAt
   });
-  return res.status(201).json({
-    message: "Account created. Verify your email before logging in.",
-    email: normalizedEmail,
-    verificationPreviewUrl: buildDebugPreviewUrl("/verify-email", verification.rawToken)
-  });
+
+  try {
+    const delivery = await sendVerificationEmail({ to: normalizedEmail, token: verification.rawToken });
+    return res.status(201).json({
+      message: delivery.delivery === "email"
+        ? "Account created. Check your email to verify your account before logging in."
+        : "Account created. Verify your email before logging in.",
+      email: normalizedEmail,
+      verificationPreviewUrl: delivery.previewUrl
+    });
+  } catch (error) {
+    await User.deleteOne({ _id: createdUser._id }).exec();
+    console.error("Failed to deliver registration verification email", {
+      email: normalizedEmail,
+      message: error.message
+    });
+    return res.status(502).json({ error: "Unable to send verification email right now. Please try again later." });
+  }
 });
 
 router.post("/login", async (req, res) => {
@@ -133,7 +152,7 @@ router.post("/verify-email/resend", async (req, res) => {
   await connectMongo();
   const found = await User.findOne({ email }).exec();
   if (!found) {
-    return res.json({ message: "If that account exists, a verification email has been prepared." });
+    return res.json({ message: "If that account exists, a verification email has been sent." });
   }
 
   if (found.email_verified_at) {
@@ -145,10 +164,22 @@ router.post("/verify-email/resend", async (req, res) => {
   found.email_verification_sent_at = verification.sentAt;
   await found.save();
 
-  return res.json({
-    message: "Verification email prepared.",
-    verificationPreviewUrl: buildDebugPreviewUrl("/verify-email", verification.rawToken)
-  });
+  try {
+    const delivery = await sendVerificationEmail({ to: found.email, token: verification.rawToken });
+    return res.json({
+      message: getVerificationEmailPreparedMessage(delivery.delivery),
+      verificationPreviewUrl: delivery.previewUrl
+    });
+  } catch (error) {
+    found.email_verification_token_hash = null;
+    found.email_verification_sent_at = null;
+    await found.save();
+    console.error("Failed to resend verification email", {
+      email: found.email,
+      message: error.message
+    });
+    return res.status(502).json({ error: "Unable to send verification email right now. Please try again later." });
+  }
 });
 
 router.post("/forgot-password", async (req, res) => {
@@ -162,7 +193,7 @@ router.post("/forgot-password", async (req, res) => {
   const found = await User.findOne({ email }).exec();
 
   if (!found || !found.email_verified_at) {
-    return res.json({ message: "If that account exists, a password reset link has been prepared." });
+    return res.json({ message: "If that account exists, a password reset email has been sent." });
   }
 
   const reset = createVerificationTokenFields();
@@ -170,10 +201,22 @@ router.post("/forgot-password", async (req, res) => {
   found.password_reset_expires_at = new Date(Date.now() + 60 * 60 * 1000);
   await found.save();
 
-  return res.json({
-    message: "Password reset link prepared.",
-    resetPreviewUrl: buildDebugPreviewUrl("/reset-password", reset.rawToken)
-  });
+  try {
+    const delivery = await sendPasswordResetEmail({ to: found.email, token: reset.rawToken });
+    return res.json({
+      message: getPasswordResetPreparedMessage(delivery.delivery),
+      resetPreviewUrl: delivery.previewUrl
+    });
+  } catch (error) {
+    found.password_reset_token_hash = null;
+    found.password_reset_expires_at = null;
+    await found.save();
+    console.error("Failed to send password reset email", {
+      email: found.email,
+      message: error.message
+    });
+    return res.status(502).json({ error: "Unable to send password reset email right now. Please try again later." });
+  }
 });
 
 router.post("/reset-password", async (req, res) => {

@@ -153,6 +153,21 @@ When running in production, set the following environment variables.
 
 Backend env examples (set via your host's env UI):
 
+Email delivery:
+
+- `EMAIL_PROVIDER=resend`
+- `EMAIL_FROM=Fantasy F1 <onboarding@resend.dev>` for initial testing, then switch to a verified sending domain
+- `RESEND_API_KEY=<your resend api key>`
+- Optional: `EMAIL_REPLY_TO=support@your-domain.com`
+- Optional: `EMAIL_PREVIEW_FALLBACK=false` in staging/production so missing email config fails fast instead of falling back to preview links
+
+Security notes:
+
+- Verification and reset tokens are random 32-byte values and only stored hashed in MongoDB.
+- Delivery uses Resend's HTTPS API; no SMTP credentials are embedded in links or returned to clients.
+- Verification links expire after 24 hours; password reset links expire after 1 hour.
+- Login still blocks unverified users, and forgot-password keeps user enumeration-resistant responses.
+
 ### Removing PostgreSQL dependencies
 
 Once you've migrated your data and no longer need Postgres support, remove the

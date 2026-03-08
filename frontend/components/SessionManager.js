@@ -12,7 +12,7 @@ import {
 
 const ACTIVITY_EVENTS = ["click", "keydown", "mousedown", "touchstart", "scroll"];
 const REFRESH_THROTTLE_MS = 60 * 1000;
-const AUTH_ROUTES = new Set(["/login", "/register"]);
+const AUTH_ROUTES = new Set(["/login", "/register", "/verify-email", "/forgot-password", "/reset-password"]);
 
 function formatRemaining(ms) {
   const totalSeconds = Math.max(0, Math.ceil(ms / 1000));

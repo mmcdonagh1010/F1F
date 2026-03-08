@@ -21,7 +21,9 @@ export default function ForgotPasswordPage() {
         method: "POST",
         body: JSON.stringify({ email })
       });
-      setMessage(res.message);
+      setMessage(res.resetPreviewUrl
+        ? `${res.message} This environment is using a preview link instead of outbound email, so use the reset preview link below.`
+        : res.message);
       setPreviewUrl(res.resetPreviewUrl || "");
     } catch (err) {
       setError(err.message);

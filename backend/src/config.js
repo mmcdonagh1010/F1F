@@ -20,6 +20,13 @@ function normalizeOrigin(value) {
   return normalized.replace(/\/$/, "");
 }
 
+function normalizeEmailProvider(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (!normalized) return "";
+  if (["resend"].includes(normalized)) return normalized;
+  return "";
+}
+
 function parseOriginList(...values) {
   return Array.from(
     new Set(
@@ -59,6 +66,11 @@ const corsAllowedOrigins = parseOriginList(
 
 const backendUrlDebug = process.env.BACKEND_URL_DEBUG || `http://localhost:${port}`;
 const backendUrlProd = process.env.BACKEND_URL_PROD || process.env.BACKEND_URL || backendUrlDebug;
+const emailProvider = normalizeEmailProvider(process.env.EMAIL_PROVIDER || (process.env.RESEND_API_KEY ? "resend" : ""));
+const emailFrom = String(process.env.EMAIL_FROM || "").trim();
+const emailReplyTo = String(process.env.EMAIL_REPLY_TO || "").trim();
+const resendApiKey = String(process.env.RESEND_API_KEY || "").trim();
+const emailPreviewFallback = process.env.EMAIL_PREVIEW_FALLBACK === "true" || (debug && process.env.EMAIL_PREVIEW_FALLBACK !== "false");
 
 export const config = {
   port,
@@ -79,5 +91,10 @@ export const config = {
   pickLockMinutesBeforeDeadline: Number(process.env.PICK_LOCK_MINUTES_BEFORE_DEADLINE || 30),
   jolpicaAutoSyncEnabled: process.env.JOLPICA_AUTO_SYNC_ENABLED !== "false",
   jolpicaAutoSyncIntervalMs: Math.max(60_000, Number(process.env.JOLPICA_AUTO_SYNC_INTERVAL_MS || 15 * 60 * 1000)),
-  jolpicaAutoSyncSeason: Number(process.env.JOLPICA_AUTO_SYNC_SEASON || new Date().getUTCFullYear())
+  jolpicaAutoSyncSeason: Number(process.env.JOLPICA_AUTO_SYNC_SEASON || new Date().getUTCFullYear()),
+  emailProvider,
+  emailFrom,
+  emailReplyTo,
+  resendApiKey,
+  emailPreviewFallback
 };
