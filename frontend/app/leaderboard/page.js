@@ -17,6 +17,8 @@ function LeaderboardPageContent() {
   const searchLeagueId = searchParams.get("leagueId") || "";
   const searchBoardMode = searchParams.get("boardMode") || "racePoints";
   const searchViewMode = searchParams.get("viewMode") || "summary";
+  const submitted = searchParams.get("submitted") === "1";
+  const submittedRace = searchParams.get("submittedRace") || "your race";
 
   const [year, setYear] = useState(searchYear);
   const [boardMode, setBoardMode] = useState(searchBoardMode);
@@ -131,6 +133,13 @@ function LeaderboardPageContent() {
   return (
     <div className="pb-24">
       <Header title="Season Leaderboard" subtitle={`Year ${year} with race-by-race points`} />
+
+      {submitted ? (
+        <section className="card mb-3 border border-emerald-300/30 bg-emerald-500/10 p-3">
+          <p className="text-sm font-semibold text-emerald-100">Predictions submitted for {submittedRace}.</p>
+          <p className="mt-1 text-xs text-emerald-200">Your updated standings will appear here after results are scored.</p>
+        </section>
+      ) : null}
 
       <section className="card mb-3 p-3">
         <div className="grid gap-3 md:grid-cols-2">
