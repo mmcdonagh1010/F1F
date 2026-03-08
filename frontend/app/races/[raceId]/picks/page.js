@@ -259,12 +259,16 @@ export default function PicksPage() {
   const { raceId } = useParams();
   const [race, setRace] = useState(null);
   const [values, setValues] = useState({});
+  const [savedValues, setSavedValues] = useState({});
   const [message, setMessage] = useState("");
   const [isLocked, setIsLocked] = useState(false);
   const [selectedLeagueId, setSelectedLeagueId] = useState("");
   const [applyToAllLeagues, setApplyToAllLeagues] = useState(false);
   const [availableLeagues, setAvailableLeagues] = useState([]);
   const [updatedLeagueNames, setUpdatedLeagueNames] = useState([]);
+  const [saveStatus, setSaveStatus] = useState("empty");
+  const [submittedAt, setSubmittedAt] = useState(null);
+  const [isSaving, setIsSaving] = useState(false);
 
   useEffect(() => {
     apiFetch(`/races/${raceId}`)
@@ -287,11 +291,16 @@ export default function PicksPage() {
           (existing.picks || []).forEach((pick) => {
             initial[pick.category_id] = pick.value_text || (pick.value_number !== null ? String(pick.value_number) : "");
           });
+          setSaveStatus(existing.status || "empty");
+          setSubmittedAt(existing.submittedAt || null);
         } catch {
           // Keep empty defaults if no picks found.
+          setSaveStatus("empty");
+          setSubmittedAt(null);
         }
 
         setValues(initial);
+        setSavedValues(initial);
       })
       .catch(() => setRace(null));
   }, [raceId]);
@@ -309,18 +318,34 @@ export default function PicksPage() {
           next[pick.category_id] = pick.value_text || (pick.value_number !== null ? String(pick.value_number) : "");
         });
         setValues(next);
+        setSavedValues(next);
+        setSaveStatus(existing.status || "empty");
+        setSubmittedAt(existing.submittedAt || null);
       })
       .catch(() => {});
   }, [raceId, selectedLeagueId, race]);
 
   const sections = useMemo(() => buildPredictionSections(race?.categories || []), [race]);
+  const hasUnsavedChanges = useMemo(() => JSON.stringify(values) !== JSON.stringify(savedValues), [values, savedValues]);
 
-  async function savePicks(e) {
-    e.preventDefault();
+  useEffect(() => {
+    if (isLocked || !hasUnsavedChanges) return undefined;
+
+    const handleBeforeUnload = (event) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
+  }, [hasUnsavedChanges, isLocked]);
+
+  async function savePicks(mode) {
     if (isLocked) {
       setMessage("Picks are locked for this race. You can view your submitted picks below.");
       return;
     }
+    setIsSaving(true);
     const picks = race.categories.map((category) => {
       const raw = (values[category.id] || "").toString().trim();
 
@@ -345,17 +370,23 @@ export default function PicksPage() {
         body: JSON.stringify({
           picks,
           leagueId: selectedLeagueId,
-          applyToAllLeagues: applyToAllLeagues && availableLeagues.length > 1
+          applyToAllLeagues: applyToAllLeagues && availableLeagues.length > 1,
+          mode
         })
       });
       const updatedNames = (res.leagueIds || [])
         .map((id) => availableLeagues.find((league) => league.id === id)?.name || id)
         .filter(Boolean);
       setUpdatedLeagueNames(updatedNames);
-      setMessage("Picks saved successfully");
+      setSavedValues(values);
+      setSaveStatus(res.status || (mode === "submit" ? "submitted" : "draft"));
+      setSubmittedAt(res.submittedAt || null);
+      setMessage(mode === "submit" ? "Picks submitted successfully" : "Draft saved successfully");
     } catch (err) {
       setUpdatedLeagueNames([]);
       setMessage(err.message);
+    } finally {
+      setIsSaving(false);
     }
   }
 
@@ -385,7 +416,6 @@ export default function PicksPage() {
             value={values[category.id] || ""}
             disabled={isLocked}
             onChange={(e) => setValues({ ...values, [category.id]: e.target.value })}
-            required
           >
             <option value="" className="bg-track-900 text-slate-300">
               {isDriverOfWeekendCategory(category.name) && filteredDriverOptions?.length === 0
@@ -406,7 +436,6 @@ export default function PicksPage() {
             value={values[category.id] || ""}
             disabled={isLocked}
             onChange={(e) => setValues({ ...values, [category.id]: e.target.value })}
-            required
           >
             <option value="" className="bg-track-900 text-slate-300">Select position</option>
             {meta.options.map((option) => (
@@ -421,7 +450,6 @@ export default function PicksPage() {
             value={values[category.id] || ""}
             disabled={isLocked}
             onChange={(e) => setValues({ ...values, [category.id]: e.target.value })}
-            required
           >
             <option value="" className="bg-track-900 text-slate-300">Select team</option>
             {meta.options.map((option) => (
@@ -436,7 +464,6 @@ export default function PicksPage() {
             value={values[category.id] || ""}
             disabled={isLocked}
             onChange={(e) => setValues({ ...values, [category.id]: e.target.value })}
-            required
           >
             <option value="" className="bg-track-900 text-slate-300">Select gap</option>
             {meta.options.map((option) => (
@@ -454,7 +481,6 @@ export default function PicksPage() {
             value={values[category.id] || ""}
             readOnly={isLocked}
             onChange={(e) => setValues({ ...values, [category.id]: e.target.value })}
-            required
           />
         )}
         {meta.hint ? <span className="mt-1 block text-xs text-slate-400">{meta.hint}</span> : null}
@@ -465,10 +491,20 @@ export default function PicksPage() {
   return (
     <div className="pb-24">
       <Header title={race.name} subtitle="Lock in your predictions" />
-      <form onSubmit={savePicks} className="card space-y-4 p-5">
+      <form className="card space-y-4 p-5">
         {isLocked ? (
           <p className="rounded-xl border border-amber-300/40 bg-amber-500/15 p-2 text-sm text-amber-200">
             Picks are locked because the deadline window is now closed. You can only view picks.
+          </p>
+        ) : null}
+        {!isLocked && hasUnsavedChanges ? (
+          <p className="rounded-xl border border-sky-300/30 bg-sky-500/10 p-2 text-sm text-sky-100">
+            You have unsaved prediction changes.
+          </p>
+        ) : null}
+        {!isLocked && saveStatus === "submitted" ? (
+          <p className="rounded-xl border border-emerald-300/30 bg-emerald-500/10 p-2 text-sm text-emerald-100">
+            Final picks submitted{submittedAt ? ` on ${new Date(submittedAt).toLocaleString()}` : ""}. You can still update them until the lock window closes.
           </p>
         ) : null}
         {race.categories.some((category) => isDriverSelectionCategory(category)) && (!race.drivers || race.drivers.length === 0) ? (
@@ -528,7 +564,26 @@ export default function PicksPage() {
             </section>
           );
         })}
-        {!isLocked ? <button className="tap w-full rounded-xl bg-accent-red font-bold text-white">Submit Picks</button> : null}
+        {!isLocked ? (
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+            <button
+              type="button"
+              className="tap w-full rounded-xl border border-white/30 px-4 py-3 font-bold text-white disabled:opacity-60"
+              onClick={() => savePicks("draft")}
+              disabled={isSaving}
+            >
+              Save Draft
+            </button>
+            <button
+              type="button"
+              className="tap w-full rounded-xl bg-accent-red px-4 py-3 font-bold text-white disabled:opacity-60"
+              onClick={() => savePicks("submit")}
+              disabled={isSaving}
+            >
+              Final Submit
+            </button>
+          </div>
+        ) : null}
         {message ? <p className="text-sm text-accent-cyan">{message}</p> : null}
         {updatedLeagueNames.length > 0 ? (
           <div className="rounded-xl border border-emerald-300/30 bg-emerald-500/10 p-2">
