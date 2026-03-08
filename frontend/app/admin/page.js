@@ -1089,8 +1089,13 @@ export default function AdminPage() {
         method: "POST",
         body: JSON.stringify({ categories })
       });
-      setPredictionMessage("Prediction options saved for selected race.");
+      await apiFetch(`/admin/races/${predictionRaceId}/predictions-live`, {
+        method: "PATCH",
+        body: JSON.stringify({ predictionsLive: true })
+      });
+      setPredictionMessage("Prediction options saved and predictions are now live for this race.");
       await loadRaces();
+      await loadPredictionRaceDetail(predictionRaceId);
     } catch (err) {
       setPredictionMessage(err.message);
     }

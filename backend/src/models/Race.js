@@ -13,7 +13,7 @@ const RaceSchema = new Schema({
   deadline_at: { type: Date },
   status: { type: String, enum: ['scheduled','completed','cancelled'], default: 'scheduled' },
   is_visible: { type: Boolean, default: true },
-  predictions_live: { type: Boolean, default: true },
+  predictions_live: { type: Boolean, default: false },
   tie_breaker_value: { type: Schema.Types.Mixed },
   created_at: { type: Date, default: Date.now }
 });
