@@ -30,7 +30,7 @@ function isDriverOfWeekendCategory(category) {
 export async function calculateRaceScores(raceId, targetLeagueId = null) {
   const categories = await PickCategory.find({ race: raceId }).sort({ display_order: 1 }).lean().exec();
   const results = await Result.find({ race: raceId }).lean().exec();
-  const picksQuery = { race: raceId };
+  const picksQuery = { race: raceId, status: "submitted" };
   if (targetLeagueId) picksQuery.league = targetLeagueId;
   const picks = await Pick.find(picksQuery).lean().exec();
 
