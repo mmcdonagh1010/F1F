@@ -377,7 +377,8 @@ async function createRaceWeekend(payload) {
       external_round: roundValue,
       race_date: new Date(raceDate),
       manual_deadline_at: new Date(deadlineAt),
-      deadline_at: new Date(resolvedDeadlineAt || deadlineAt)
+      deadline_at: new Date(resolvedDeadlineAt || deadlineAt),
+      predictions_live: false
     });
 
     const raceDrivers = normalizeDriverRows(drivers);
