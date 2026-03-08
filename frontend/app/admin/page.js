@@ -26,7 +26,6 @@ const ADMIN_TABS = [
   { key: "drivers", label: "Drivers" },
   { key: "sync", label: "API Sync" },
   { key: "results", label: "Results" },
-  { key: "visibility", label: "Visibility" },
   { key: "settings", label: "Settings" },
   { key: "users", label: "Users" }
 ];
@@ -777,6 +776,9 @@ export default function AdminPage() {
         body: JSON.stringify({ isVisible })
       });
       await loadRaces();
+      if (predictionRaceId === raceId) {
+        await loadPredictionRaceDetail(raceId);
+      }
     } catch (err) {
       setMessage(err.message);
     }
@@ -789,6 +791,9 @@ export default function AdminPage() {
         body: JSON.stringify({ predictionsLive })
       });
       await loadRaces();
+      if (predictionRaceId === raceId) {
+        await loadPredictionRaceDetail(raceId);
+      }
     } catch (err) {
       setMessage(err.message);
     }
@@ -1316,6 +1321,42 @@ export default function AdminPage() {
             </div>
           </div>
 
+          {predictionRaceDetail ? (
+            <div className="rounded-xl border border-white/20 bg-white/5 p-3">
+              <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                <div>
+                  <p className="font-semibold text-slate-100">Race Access</p>
+                  <p className="mt-1 text-xs text-slate-400">
+                    {predictionRaceDetail.name} • Deadline {new Date(predictionRaceDetail.deadline_at).toLocaleString()}
+                  </p>
+                  <p className="mt-1 text-xs text-slate-400">
+                    Visible to players: {predictionRaceDetail.is_visible ? "Yes" : "No"} • Predictions live: {predictionRaceDetail.predictions_live === false ? "No" : "Yes"}
+                  </p>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    className={`tap rounded-xl px-3 py-2 text-xs font-bold ${
+                      predictionRaceDetail.predictions_live === false ? "bg-slate-600 text-white" : "bg-emerald-500 text-track-900"
+                    }`}
+                    onClick={() => setRacePredictionsLive(predictionRaceId, predictionRaceDetail.predictions_live === false)}
+                  >
+                    {predictionRaceDetail.predictions_live === false ? "Open Predictions" : "Close Predictions"}
+                  </button>
+                  <button
+                    type="button"
+                    className={`tap rounded-xl px-3 py-2 text-xs font-bold ${
+                      predictionRaceDetail.is_visible ? "bg-accent-cyan text-track-900" : "bg-slate-600 text-white"
+                    }`}
+                    onClick={() => setRaceVisibility(predictionRaceId, !predictionRaceDetail.is_visible)}
+                  >
+                    {predictionRaceDetail.is_visible ? "Hide Race" : "Show Race"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          ) : null}
+
           <label className="flex items-center gap-2 text-sm text-slate-200">
             <input
               type="checkbox"
@@ -1774,46 +1815,6 @@ raceId,tieBreakerValue,categoryName,valueText,valueNumber
           </div>
 
           {bulkMessage ? <p className="text-accent-gold">{bulkMessage}</p> : null}
-        </section>
-      ) : null}
-
-      {activeTab === "visibility" ? (
-        <section className="card p-4 text-sm text-slate-200">
-          <h2 className="font-display text-2xl text-accent-cyan">Race Visibility</h2>
-          <p className="mt-2 text-slate-300">Hide or show races for players, and control when predictions can be submitted.</p>
-          <div className="mt-3 space-y-2">
-            {allRaces.map((raceRow) => (
-              <div key={raceRow.id} className="rounded-xl border border-white/20 px-3 py-2">
-                <div>
-                  <p className="font-semibold text-slate-100">{raceRow.name}</p>
-                  <p className="text-xs text-slate-400">{new Date(raceRow.deadline_at).toLocaleString()}</p>
-                  <p className="mt-1 text-xs text-slate-400">
-                    Predictions: {raceRow.predictions_live === false ? "Closed" : "Live"}
-                  </p>
-                </div>
-                <div className="mt-3 flex flex-wrap justify-end gap-2">
-                  <button
-                    type="button"
-                    className={`tap rounded-xl px-3 py-1 text-xs font-bold ${
-                      raceRow.predictions_live === false ? "bg-slate-600 text-white" : "bg-emerald-500 text-track-900"
-                    }`}
-                    onClick={() => setRacePredictionsLive(raceRow.id, raceRow.predictions_live === false)}
-                  >
-                    {raceRow.predictions_live === false ? "Open Predictions" : "Close Predictions"}
-                  </button>
-                  <button
-                    type="button"
-                    className={`tap rounded-xl px-3 py-1 text-xs font-bold ${
-                      raceRow.is_visible ? "bg-accent-cyan text-track-900" : "bg-slate-600 text-white"
-                    }`}
-                    onClick={() => setRaceVisibility(raceRow.id, !raceRow.is_visible)}
-                  >
-                    {raceRow.is_visible ? "Hide Race" : "Show Race"}
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
         </section>
       ) : null}
 
