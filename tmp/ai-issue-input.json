@@ -1,0 +1,15 @@
+{
+  "repository": {
+    "owner": "mmcdonagh1010",
+    "name": "F1F"
+  },
+  "issue": {
+    "number": 3,
+    "title": "Ensure the deadline is based on the admins prediction options",
+    "body": "By default the deadline for predictions should be at the 1st qualification date. \nIf there is a sprint qualification before Race Qualifying then it should be sprint qualification date as the deadline. ",
+    "labels": [
+      "ai-fix"
+    ]
+  },
+  "comments": []
+}
