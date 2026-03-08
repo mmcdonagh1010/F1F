@@ -20,6 +20,7 @@ function parsePositionCategoryScope(categoryName) {
   if (/^sprint qualification p\d+$/i.test(categoryName || "")) return "sprint";
   if (/^sprint result p\d+$/i.test(categoryName || "")) return "sprint";
   if (/^race result p\d+$/i.test(categoryName || "")) return "race";
+  if (normalized.includes("sprint qualification")) return "sprint";
   if (normalized.includes("sprint result winner")) return "sprint";
   if (normalized.includes("qualification")) return "qualifying";
   return null;
