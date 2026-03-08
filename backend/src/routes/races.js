@@ -43,7 +43,7 @@ router.get("/", authRequired, async (req, res) => {
     const memberships = await LeagueMember.find({ user: req.user.id }).select('league').lean().exec();
     const leagueIds = memberships.map((m) => String(m.league));
     if (leagueIds.length > 0) {
-      racesDocs = await Race.find({ leagues: { $in: leagueIds }, is_visible: true }).sort({ race_date: 1 }).lean().exec();
+      racesDocs = await Race.find({ leagues: { $in: leagueIds } }).sort({ race_date: 1 }).lean().exec();
     } else {
       racesDocs = [];
     }
@@ -89,7 +89,6 @@ router.get("/:raceId", authRequired, async (req, res) => {
       availableLeagues = leagueDocs.map((l) => ({ id: String(l._id), name: l.name }));
     }
   } else {
-    if (!raceDoc.is_visible) return res.status(404).json({ error: 'Race not found' });
     const membershipDocs = await LeagueMember.find({ user: req.user.id, league: { $in: raceDoc.leagues || [] } }).populate({ path: 'league', select: 'name' }).lean().exec();
     availableLeagues = membershipDocs.map((m) => ({ id: String(m.league._id), name: m.league.name }));
     if (availableLeagues.length === 0) return res.status(403).json({ error: 'Race is not available in your leagues' });

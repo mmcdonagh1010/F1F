@@ -133,8 +133,9 @@ router.post("/:raceId", authRequired, async (req, res) => {
     return res.status(400).json({ error: "picks must be an array" });
   }
 
-  const race = await Race.findById(raceId).select('deadline_at predictions_live').lean().exec();
+  const race = await Race.findById(raceId).select('deadline_at predictions_live is_visible').lean().exec();
   if (!race) return res.status(404).json({ error: 'Race not found' });
+  if (race.is_visible === false) return res.status(403).json({ error: 'This race is currently hidden' });
   if (!arePredictionsLive(race)) return res.status(403).json({ error: 'Predictions are not live for this race' });
   if (getLockAt(race.deadline_at, lockMinutes).getTime() <= Date.now()) return res.status(423).json({ error: 'Picks are locked for this race' });
 

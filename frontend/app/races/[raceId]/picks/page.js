@@ -329,7 +329,8 @@ export default function PicksPage() {
   const sections = useMemo(() => buildPredictionSections(race?.categories || []), [race]);
   const hasUnsavedChanges = useMemo(() => JSON.stringify(values) !== JSON.stringify(savedValues), [values, savedValues]);
   const arePredictionsLive = race?.predictions_live !== false;
-  const isEditingDisabled = isLocked || !arePredictionsLive;
+  const isRaceHidden = race?.is_visible === false;
+  const isEditingDisabled = isLocked || !arePredictionsLive || isRaceHidden;
 
   useEffect(() => {
     if (isEditingDisabled || !hasUnsavedChanges) return undefined;
@@ -344,6 +345,10 @@ export default function PicksPage() {
   }, [hasUnsavedChanges, isEditingDisabled]);
 
   async function savePicks(mode) {
+    if (isRaceHidden) {
+      setMessage("This race is currently hidden by the admin.");
+      return;
+    }
     if (!arePredictionsLive) {
       setMessage("Predictions are not live for this race yet.");
       return;
@@ -508,6 +513,11 @@ export default function PicksPage() {
     <div className="pb-24">
       <Header title={race.name} subtitle="Lock in your predictions" />
       <form className="card space-y-4 p-5">
+        {isRaceHidden ? (
+          <p className="rounded-xl border border-slate-300/30 bg-slate-500/10 p-2 text-sm text-slate-200">
+            This race is currently hidden by the admin. Make Picks is disabled until the race is shown again.
+          </p>
+        ) : null}
         {!arePredictionsLive ? (
           <p className="rounded-xl border border-slate-300/30 bg-slate-500/10 p-2 text-sm text-slate-200">
             Predictions are not live for this race yet. You can review the categories, but pick selection is disabled until an admin opens them.
