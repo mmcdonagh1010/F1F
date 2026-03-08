@@ -139,7 +139,16 @@ router.post("/:raceId", authRequired, async (req, res) => {
   const normalizedPicks = normalizeSubmittedPicks(picks, categoriesById, mode);
 
   if (mode === "submit") {
-    const missingCategory = categories.find((category) => !normalizedPicks.some((pick) => pick.categoryId === String(category._id)));
+    const missingCategory = categories.find((category) => {
+      const submittedPick = normalizedPicks.find((pick) => pick.categoryId === String(category._id));
+      if (!submittedPick) return true;
+
+      if (isDriverOfWeekendCategory(category.name)) {
+        return !Number.isInteger(submittedPick.valueNumber);
+      }
+
+      return !String(submittedPick.valueText || "").trim();
+    });
     if (missingCategory) {
       return res.status(400).json({ error: `Complete every prediction before final submit. Missing '${missingCategory.name}'.` });
     }
