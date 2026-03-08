@@ -59,6 +59,33 @@ function getConfiguredTeamForCategory(category) {
   return String(category?.metadata?.fixedTeam || "").trim().toLowerCase();
 }
 
+function normalizeSubmittedPicks(picks, categoriesById, mode) {
+  return (Array.isArray(picks) ? picks : [])
+    .map((pick) => {
+      const category = categoriesById.get(String(pick?.categoryId || ""));
+      if (!category) return null;
+
+      const valueText = String(pick?.valueText || "").trim();
+      const rawValueNumber = pick?.valueNumber;
+      const valueNumber = rawValueNumber === null || rawValueNumber === undefined || rawValueNumber === ""
+        ? null
+        : Number(rawValueNumber);
+
+      const hasValue = isDriverOfWeekendCategory(category.name)
+        ? Number.isInteger(valueNumber)
+        : Boolean(valueText);
+
+      if (!hasValue && mode === "draft") return null;
+
+      return {
+        categoryId: String(pick.categoryId),
+        valueText: hasValue ? valueText || null : null,
+        valueNumber: hasValue ? valueNumber : null
+      };
+    })
+    .filter(Boolean);
+}
+
 router.get("/:raceId", authRequired, async (req, res) => {
   const { raceId } = req.params;
   const requestedLeagueId = String(req.query.leagueId || "").trim() || null;
@@ -71,17 +98,35 @@ router.get("/:raceId", authRequired, async (req, res) => {
   const effectiveLeagueId = requestedLeagueId || availableLeagueIds[0];
   if (!availableLeagueIds.includes(effectiveLeagueId)) return res.status(403).json({ error: "You are not a member of the selected league for this race" });
 
-  const picks = await Pick.find({ race: raceId, league: effectiveLeagueId, user: req.user.id }).select('category value_text value_number').lean().exec();
-  return res.json({ leagueId: effectiveLeagueId, picks });
+  const picks = await Pick.find({ race: raceId, league: effectiveLeagueId, user: req.user.id })
+    .select('category value_text value_number status submitted_at')
+    .lean()
+    .exec();
+  return res.json({
+    leagueId: effectiveLeagueId,
+    status: picks[0]?.status || "empty",
+    submittedAt: picks[0]?.submitted_at || null,
+    picks: picks.map((pick) => ({
+      category_id: String(pick.category),
+      value_text: pick.value_text,
+      value_number: pick.value_number,
+      status: pick.status,
+      submitted_at: pick.submitted_at || null
+    }))
+  });
 });
 
 router.post("/:raceId", authRequired, async (req, res) => {
   const { raceId } = req.params;
-  const { picks, leagueId, applyToAllLeagues } = req.body;
+  const { picks, leagueId, applyToAllLeagues, mode = "submit" } = req.body;
   const lockMinutes = await getPickLockMinutesBeforeDeadline();
 
-  if (!Array.isArray(picks) || picks.length === 0) {
-    return res.status(400).json({ error: "picks must be a non-empty array" });
+  if (!["draft", "submit"].includes(mode)) {
+    return res.status(400).json({ error: "mode must be 'draft' or 'submit'" });
+  }
+
+  if (!Array.isArray(picks)) {
+    return res.status(400).json({ error: "picks must be an array" });
   }
 
   const race = await Race.findById(raceId).select('deadline_at').lean().exec();
@@ -91,6 +136,14 @@ router.post("/:raceId", authRequired, async (req, res) => {
   const categories = await PickCategory.find({ race: raceId }).select('name is_position_based metadata').lean().exec();
   const categoriesById = new Map(categories.map((row) => [String(row._id), row]));
   const teamOfWeekendCategory = categories.find((row) => isTeamOfWeekendCategory(row.name));
+  const normalizedPicks = normalizeSubmittedPicks(picks, categoriesById, mode);
+
+  if (mode === "submit") {
+    const missingCategory = categories.find((category) => !normalizedPicks.some((pick) => pick.categoryId === String(category._id)));
+    if (missingCategory) {
+      return res.status(400).json({ error: `Complete every prediction before final submit. Missing '${missingCategory.name}'.` });
+    }
+  }
 
   const driversRes = await RaceDriver.find({ race: raceId }).lean().exec();
   const validDrivers = new Set(driversRes.map((row) => row.driver_name.toLowerCase()));
@@ -106,10 +159,10 @@ router.post("/:raceId", authRequired, async (req, res) => {
   if (!availableLeagueIds.includes(requestedLeagueIdLocal)) return res.status(403).json({ error: 'You are not a member of the selected league for this race' });
 
   const targetLeagueIds = applyToAllLeagues ? availableLeagueIds : [requestedLeagueIdLocal];
-  const submittedByCategoryId = new Map((Array.isArray(picks) ? picks : []).map((pick) => [pick.categoryId, pick]));
+  const submittedByCategoryId = new Map(normalizedPicks.map((pick) => [pick.categoryId, pick]));
   const selectedTeamOfWeekend = teamOfWeekendCategory ? String(submittedByCategoryId.get(String(teamOfWeekendCategory._id))?.valueText || '').trim().toLowerCase() : '';
 
-  for (const pick of picks) {
+  for (const pick of normalizedPicks) {
     const category = categoriesById.get(pick.categoryId);
     if (!category) return res.status(400).json({ error: `Invalid category for race: ${pick.categoryId}` });
     if (isDriverOfWeekendCategory(category.name)) {
@@ -140,13 +193,29 @@ router.post("/:raceId", authRequired, async (req, res) => {
     }
   }
 
+  const submittedAt = mode === "submit" ? new Date() : null;
   for (const targetLeagueId of targetLeagueIds) {
     await Pick.deleteMany({ race: raceId, league: targetLeagueId, user: req.user.id }).exec();
-    const docs = picks.map((p) => ({ race: raceId, league: targetLeagueId, user: req.user.id, category: p.categoryId, value_text: p.valueText || null, value_number: p.valueNumber ?? null }));
+    const docs = normalizedPicks.map((p) => ({
+      race: raceId,
+      league: targetLeagueId,
+      user: req.user.id,
+      category: p.categoryId,
+      value_text: p.valueText || null,
+      value_number: p.valueNumber ?? null,
+      status: mode === "submit" ? "submitted" : "draft",
+      submitted_at: submittedAt,
+      updated_at: new Date()
+    }));
     if (docs.length) await Pick.insertMany(docs);
   }
 
-  return res.json({ message: 'Picks saved', leagueIds: targetLeagueIds });
+  return res.json({
+    message: mode === "submit" ? 'Picks submitted' : 'Draft saved',
+    leagueIds: targetLeagueIds,
+    status: mode === "submit" ? "submitted" : "draft",
+    submittedAt
+  });
 });
 
 router.get("/:raceId/reveal", authRequired, async (req, res) => {
@@ -165,7 +234,7 @@ router.get("/:raceId/reveal", authRequired, async (req, res) => {
   const effectiveLeagueIdLocal = requestedLeagueId || availableLeagueIds[0];
   if (!availableLeagueIds.includes(effectiveLeagueIdLocal)) return res.status(403).json({ error: 'You are not a member of the selected league for this race' });
 
-  const allPicks = await Pick.find({ race: raceId, league: effectiveLeagueIdLocal }).populate({ path: 'user', select: 'name' }).populate({ path: 'category', select: 'name display_order' }).lean().exec();
+  const allPicks = await Pick.find({ race: raceId, league: effectiveLeagueIdLocal, status: 'submitted' }).populate({ path: 'user', select: 'name' }).populate({ path: 'category', select: 'name display_order' }).lean().exec();
   const mapped = allPicks.map((p) => ({ player_name: p.user ? p.user.name : null, category_id: String(p.category ? p.category._id : p.category), category_name: p.category ? p.category.name : null, value_text: p.value_text, value_number: p.value_number }));
   return res.json({ leagueId: effectiveLeagueIdLocal, picks: mapped });
 });

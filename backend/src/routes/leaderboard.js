@@ -172,7 +172,7 @@ router.get("/latest", authRequired, async (req, res) => {
 
   const categories = await PickCategory.find({ race: latestRace._id }).sort({ display_order: 1 }).lean().exec();
   const members = await LeagueMember.find({ league: leagueId }).populate({ path: 'user', select: 'name' }).lean().exec();
-  const picks = await Pick.find({ race: latestRace._id, league: leagueId }).lean().exec();
+  const picks = await Pick.find({ race: latestRace._id, league: leagueId, status: 'submitted' }).lean().exec();
   const results = await Result.find({ race: latestRace._id }).lean().exec();
 
   const overallDocs = await Score.aggregate([
@@ -273,7 +273,7 @@ router.get("/season/player/:userId", authRequired, async (req, res) => {
   const selectedRaceObjectIds = selectedRaceIds.map((id) => (mongoose.Types.ObjectId.isValid(id) ? mongoose.Types.ObjectId(id) : id));
 
   const categoryDocs = await PickCategory.find({ race: { $in: selectedRaceObjectIds } }).sort({ race: 1, display_order: 1 }).lean().exec();
-  const pickDocs = await Pick.find({ user: userId, league: leagueId, race: { $in: selectedRaceObjectIds } }).lean().exec();
+  const pickDocs = await Pick.find({ user: userId, league: leagueId, race: { $in: selectedRaceObjectIds }, status: 'submitted' }).lean().exec();
   const resultDocs = await Result.find({ race: { $in: selectedRaceObjectIds } }).lean().exec();
 
   const pickMap = new Map();

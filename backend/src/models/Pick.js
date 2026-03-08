@@ -9,6 +9,9 @@ const PickSchema = new Schema({
   category: { type: Schema.Types.ObjectId, ref: 'PickCategory' },
   value_text: { type: String },
   value_number: { type: Number },
+  status: { type: String, enum: ['draft', 'submitted'], default: 'draft', index: true },
+  submitted_at: { type: Date },
+  updated_at: { type: Date, default: Date.now },
   created_at: { type: Date, default: Date.now }
 });
 
