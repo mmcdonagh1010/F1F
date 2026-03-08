@@ -656,6 +656,47 @@ export default function AdminPage() {
     }
   }
 
+  async function deleteLeague() {
+    if (!selectedLeague) return;
+
+    const shouldDelete = window.confirm(
+      `Delete league '${selectedLeague.name}'? This removes its members, league picks, league scores, and any races that no longer belong to another league.`
+    );
+    if (!shouldDelete) return;
+
+    try {
+      const deletedLeagueId = selectedLeague.id;
+      const response = await apiFetch(`/admin/leagues/${deletedLeagueId}`, {
+        method: "DELETE"
+      });
+
+      setEditingLeagueId(null);
+      setEditingLeagueForm({ name: "", inviteCode: "" });
+
+      const refreshedLeagues = await apiFetch("/admin/leagues");
+      setLeagues(refreshedLeagues);
+
+      const nextLeagueId = refreshedLeagues[0]?.id || "";
+      setSelectedLeagueId(nextLeagueId);
+      setLeagueMembers([]);
+      setLeagueMessage(
+        `${response.league.name} deleted.${response.deletedRaceCount ? ` Removed ${response.deletedRaceCount} orphaned race(s).` : ""}`
+      );
+      setRace((prev) => ({
+        ...prev,
+        leagueId: nextLeagueId,
+        leagueIds: (prev.leagueIds || []).filter((id) => id !== deletedLeagueId)
+      }));
+
+      if (nextLeagueId) {
+        await loadLeagueMembers(nextLeagueId);
+      }
+      await loadRaces();
+    } catch (err) {
+      setLeagueMessage(err.message);
+    }
+  }
+
   async function updateUserRole(userId, role) {
     try {
       const updated = await apiFetch(`/admin/users/${userId}/role`, {
@@ -1216,18 +1257,27 @@ export default function AdminPage() {
             <div className="space-y-3 rounded-xl border border-white/20 bg-white/5 p-3">
               <div className="flex items-center justify-between gap-3">
                 <p className="font-semibold text-slate-100">League Details</p>
-                {editingLeagueId === selectedLeague.id ? null : (
+                <div className="flex gap-2">
+                  {editingLeagueId === selectedLeague.id ? null : (
+                    <button
+                      type="button"
+                      className="tap rounded-xl border border-white/30 px-3 py-2 text-xs font-semibold text-slate-100"
+                      onClick={() => {
+                        setEditingLeagueId(selectedLeague.id);
+                        setEditingLeagueForm({ name: selectedLeague.name, inviteCode: selectedLeague.invite_code });
+                      }}
+                    >
+                      Edit League
+                    </button>
+                  )}
                   <button
                     type="button"
-                    className="tap rounded-xl border border-white/30 px-3 py-2 text-xs font-semibold text-slate-100"
-                    onClick={() => {
-                      setEditingLeagueId(selectedLeague.id);
-                      setEditingLeagueForm({ name: selectedLeague.name, inviteCode: selectedLeague.invite_code });
-                    }}
+                    className="tap rounded-xl border border-red-400/60 px-3 py-2 text-xs font-semibold text-red-200"
+                    onClick={deleteLeague}
                   >
-                    Edit League
+                    Delete League
                   </button>
-                )}
+                </div>
               </div>
 
               {editingLeagueId === selectedLeague.id ? (
