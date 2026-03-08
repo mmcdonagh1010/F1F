@@ -95,13 +95,15 @@ export default function DashboardPage() {
           <p className="text-sm text-slate-300">{race.circuit_name}</p>
           <p className="mt-2 text-xs text-slate-400">Deadline: {new Date(race.deadline_at).toLocaleString()}</p>
           <p className="mt-1 text-xs text-slate-400">
-            {race.predictions_live === false
+            {race.is_visible === false
+              ? "This race is currently hidden by the admin."
+              : race.predictions_live === false
               ? "Predictions are not live yet."
               : race.is_locked
               ? "Predictions are closed for this race."
               : "Predictions are live."}
           </p>
-          {race.predictions_live === false || race.is_locked ? (
+          {race.is_visible === false || race.predictions_live === false || race.is_locked ? (
             <button
               type="button"
               disabled
