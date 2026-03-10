@@ -1,11 +1,7 @@
-const withPWA = require("next-pwa")({
-  dest: "public",
-  disable: true
-});
+const path = require("path");
 
-module.exports = withPWA({
+module.exports = {
   reactStrictMode: true,
-  experimental: {
-    typedRoutes: false
-  }
-});
+  typedRoutes: false,
+  outputFileTracingRoot: path.join(__dirname, "..")
+};

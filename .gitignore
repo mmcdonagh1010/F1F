@@ -5,6 +5,10 @@ node_modules/
 # Environment files
 .env
 **/.env
+.env.*
+**/.env.*
+!.env.example
+!**/.env.example
 
 # VS Code and Mac files
 .vscode/

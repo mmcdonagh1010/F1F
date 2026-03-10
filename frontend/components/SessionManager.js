@@ -6,9 +6,11 @@ import {
   SESSION_WARNING_MS,
   clearAuthSession,
   getAuthSessionExpiry,
-  getStoredToken,
+  hasStoredSession,
+  storeAuthSession,
   refreshAuthSessionExpiry
 } from "../lib/auth";
+import { logoutApiSession, publicApiFetch } from "../lib/api";
 
 const ACTIVITY_EVENTS = ["click", "keydown", "mousedown", "touchstart", "scroll"];
 const REFRESH_THROTTLE_MS = 60 * 1000;
@@ -35,10 +37,30 @@ export default function SessionManager() {
       return;
     }
 
+    let isActive = true;
     setExpiresAt(getAuthSessionExpiry());
 
+    if (!hasStoredSession()) {
+      setShowPrompt(false);
+      router.replace("/login");
+      return;
+    }
+
+    publicApiFetch("/auth/me")
+      .then((session) => {
+        if (!isActive) return;
+        storeAuthSession(session.user, session.sessionExpiresAt);
+        setExpiresAt(getAuthSessionExpiry());
+      })
+      .catch(() => {
+        if (!isActive) return;
+        clearAuthSession();
+        setShowPrompt(false);
+        router.replace("/login");
+      });
+
     const handleActivity = () => {
-      if (!getStoredToken()) return;
+      if (!hasStoredSession()) return;
       const now = Date.now();
       if (now - lastRefreshAtRef.current < REFRESH_THROTTLE_MS) return;
       lastRefreshAtRef.current = now;
@@ -60,11 +82,11 @@ export default function SessionManager() {
 
     const intervalId = window.setInterval(() => {
       setCurrentTime(Date.now());
-      const token = getStoredToken();
+      const hasSession = hasStoredSession();
       const nextExpiry = getAuthSessionExpiry();
       setExpiresAt(nextExpiry);
 
-      if (!token) {
+      if (!hasSession) {
         setShowPrompt(false);
         if (!AUTH_ROUTES.has(pathname)) {
           router.replace("/login");
@@ -84,6 +106,7 @@ export default function SessionManager() {
     }, 1000);
 
     return () => {
+      isActive = false;
       ACTIVITY_EVENTS.forEach((eventName) => {
         window.removeEventListener(eventName, handleActivity);
       });
@@ -102,13 +125,14 @@ export default function SessionManager() {
     setShowPrompt(false);
   }
 
-  function logoutNow() {
+  async function logoutNow() {
+    await logoutApiSession();
     clearAuthSession();
     setShowPrompt(false);
     router.replace("/login");
   }
 
-  if (!showPrompt || AUTH_ROUTES.has(pathname) || !getStoredToken()) {
+  if (!showPrompt || AUTH_ROUTES.has(pathname) || !hasStoredSession()) {
     return null;
   }
 

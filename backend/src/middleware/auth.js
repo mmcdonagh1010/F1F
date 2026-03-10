@@ -14,7 +14,7 @@ export function authRequired(req, res, next) {
   const bearerToken = authHeader && authHeader.startsWith("Bearer ")
     ? authHeader.split(" ")[1]
     : "";
-  const cookieToken = getCookieValue(req.headers.cookie, "f1f_token");
+  const cookieToken = getCookieValue(req.headers.cookie, config.authCookieName);
   const token = bearerToken || cookieToken;
 
   if (!token) {

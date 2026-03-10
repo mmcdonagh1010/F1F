@@ -1,85 +1,28 @@
-const TOKEN_KEY = "f1f_token";
 const USER_KEY = "f1f_user";
 const SESSION_EXPIRES_AT_KEY = "f1f_session_expires_at";
+const SERVER_SESSION_EXPIRES_AT_KEY = "f1f_server_session_expires_at";
 
 export const SESSION_TIMEOUT_MS = 30 * 60 * 1000;
 export const SESSION_WARNING_MS = 60 * 1000;
 
-function decodeTokenPayload(token) {
-  if (typeof window === "undefined" || !token) return null;
-
-  try {
-    const [, payload = ""] = String(token).split(".");
-    if (!payload) return null;
-
-    const normalized = payload.replace(/-/g, "+").replace(/_/g, "/");
-    const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=");
-    const decoded = window.atob(padded);
-    const json = decodeURIComponent(
-      Array.from(decoded)
-        .map((char) => `%${char.charCodeAt(0).toString(16).padStart(2, "0")}`)
-        .join("")
-    );
-
-    return JSON.parse(json);
-  } catch {
-    return null;
-  }
-}
-
-function buildUserFromToken(token) {
-  const payload = decodeTokenPayload(token);
-  if (!payload || !payload.id || !payload.role) return null;
-
-  return {
-    id: String(payload.id),
-    name: String(payload.name || "").trim(),
-    email: String(payload.email || "").trim(),
-    role: String(payload.role || "player").trim() || "player"
-  };
-}
-
-function getCookieValue(name) {
-  if (typeof document === "undefined") return "";
-  const prefix = `${name}=`;
-  const match = document.cookie
-    .split("; ")
-    .find((entry) => entry.startsWith(prefix));
-  return match ? decodeURIComponent(match.slice(prefix.length)) : "";
-}
-
-function setCookieValue(name, value) {
-  if (typeof document === "undefined") return;
-  document.cookie = `${name}=${encodeURIComponent(value)}; path=/; max-age=2592000; samesite=lax`;
-}
-
-function clearCookieValue(name) {
-  if (typeof document === "undefined") return;
-  document.cookie = `${name}=; path=/; max-age=0; samesite=lax`;
-}
-
 function readStorageValue(key) {
   if (typeof window === "undefined") return "";
-  return localStorage.getItem(key) || sessionStorage.getItem(key) || getCookieValue(key) || "";
+  return localStorage.getItem(key) || sessionStorage.getItem(key) || "";
 }
 
 function writeStorageValue(key, value) {
   if (typeof window === "undefined") return;
   localStorage.setItem(key, value);
   sessionStorage.setItem(key, value);
-  setCookieValue(key, value);
 }
 
 function removeStoredAuthKeys() {
   sessionStorage.removeItem(SESSION_EXPIRES_AT_KEY);
-  sessionStorage.removeItem(TOKEN_KEY);
   sessionStorage.removeItem(USER_KEY);
+  sessionStorage.removeItem(SERVER_SESSION_EXPIRES_AT_KEY);
   localStorage.removeItem(SESSION_EXPIRES_AT_KEY);
-  localStorage.removeItem(TOKEN_KEY);
   localStorage.removeItem(USER_KEY);
-  clearCookieValue(SESSION_EXPIRES_AT_KEY);
-  clearCookieValue(TOKEN_KEY);
-  clearCookieValue(USER_KEY);
+  localStorage.removeItem(SERVER_SESSION_EXPIRES_AT_KEY);
 }
 
 function getStoredExpiryAt() {
@@ -92,12 +35,41 @@ function writeStoredExpiryAt(expiresAt) {
   writeStorageValue(SESSION_EXPIRES_AT_KEY, String(expiresAt));
 }
 
+function getStoredServerExpiryAt() {
+  const rawValue = readStorageValue(SERVER_SESSION_EXPIRES_AT_KEY);
+  const parsed = Number(rawValue);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function writeStoredServerExpiryAt(expiresAt) {
+  if (!expiresAt) {
+    sessionStorage.removeItem(SERVER_SESSION_EXPIRES_AT_KEY);
+    localStorage.removeItem(SERVER_SESSION_EXPIRES_AT_KEY);
+    return;
+  }
+
+  writeStorageValue(SERVER_SESSION_EXPIRES_AT_KEY, String(expiresAt));
+}
+
+function resolveNextExpiryAt() {
+  const serverExpiresAt = getStoredServerExpiryAt();
+  const idleExpiresAt = Date.now() + SESSION_TIMEOUT_MS;
+  const nextExpiry = serverExpiresAt > 0 ? Math.min(idleExpiresAt, serverExpiresAt) : idleExpiresAt;
+
+  return nextExpiry > Date.now() ? nextExpiry : 0;
+}
+
 export function refreshAuthSessionExpiry() {
   if (typeof window === "undefined") return 0;
-  const token = readStorageValue(TOKEN_KEY);
-  if (!token) return 0;
+  const rawUser = readStorageValue(USER_KEY);
+  if (!rawUser) return 0;
 
-  const expiresAt = Date.now() + SESSION_TIMEOUT_MS;
+  const expiresAt = resolveNextExpiryAt();
+  if (!expiresAt) {
+    removeStoredAuthKeys();
+    return 0;
+  }
+
   writeStoredExpiryAt(expiresAt);
   return expiresAt;
 }
@@ -107,8 +79,8 @@ export function getAuthSessionExpiry() {
   const expiresAt = getStoredExpiryAt();
   if (expiresAt > 0) return expiresAt;
 
-  const token = readStorageValue(TOKEN_KEY);
-  if (!token) return 0;
+  const rawUser = readStorageValue(USER_KEY);
+  if (!rawUser) return 0;
 
   return refreshAuthSessionExpiry();
 }
@@ -118,60 +90,41 @@ export function isAuthSessionExpired() {
   return expiresAt > 0 && expiresAt <= Date.now();
 }
 
-export function getStoredToken() {
+export function hasStoredSession() {
   if (typeof window === "undefined") return null;
-  const token = readStorageValue(TOKEN_KEY);
   const rawUser = readStorageValue(USER_KEY);
 
-  if (!token && rawUser) {
+  if (!rawUser) return false;
+
+  if (isAuthSessionExpired()) {
     removeStoredAuthKeys();
-    return null;
+    return false;
   }
 
-  if (token && isAuthSessionExpired()) {
-    removeStoredAuthKeys();
-    return null;
-  }
-
-  if (token) {
-    writeStorageValue(TOKEN_KEY, token);
-  }
-
-  return token;
+  return true;
 }
 
 export function getStoredUser() {
   if (typeof window === "undefined") return null;
-  const token = getStoredToken();
-  if (!token) return null;
+  if (!hasStoredSession()) return null;
 
   const raw = readStorageValue(USER_KEY);
-  if (!raw) {
-    const userFromToken = buildUserFromToken(token);
-    if (!userFromToken) return null;
-    writeStorageValue(USER_KEY, JSON.stringify(userFromToken));
-    return userFromToken;
-  }
 
   try {
     const parsed = JSON.parse(raw);
     writeStorageValue(USER_KEY, JSON.stringify(parsed));
     return parsed;
   } catch {
-    const userFromToken = buildUserFromToken(token);
-    if (!userFromToken) {
-      removeStoredAuthKeys();
-      return null;
-    }
-    writeStorageValue(USER_KEY, JSON.stringify(userFromToken));
-    return userFromToken;
+    removeStoredAuthKeys();
+    return null;
   }
 }
 
-export function storeAuthSession(token, user) {
+export function storeAuthSession(user, sessionExpiresAt = null) {
   if (typeof window === "undefined") return;
-  writeStorageValue(TOKEN_KEY, token);
   writeStorageValue(USER_KEY, JSON.stringify(user));
+  const parsedServerExpiry = sessionExpiresAt ? new Date(sessionExpiresAt).getTime() : 0;
+  writeStoredServerExpiryAt(Number.isFinite(parsedServerExpiry) ? parsedServerExpiry : 0);
   refreshAuthSessionExpiry();
 }
 

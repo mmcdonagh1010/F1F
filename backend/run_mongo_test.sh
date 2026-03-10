@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-export MONGODB_URI='mongodb+srv://mmcdonagh1010:w5yB8GWFIBTozRvC@f1-fantasy-league.40bag.mongodb.net/'
+if [[ -z "${MONGODB_URI:-}" && ( -z "${MONGO_USERNAME:-}" || -z "${MONGO_PASSWORD:-}" ) ]]; then
+	echo "Set MONGODB_URI or both MONGO_USERNAME and MONGO_PASSWORD before running this script." >&2
+	exit 1
+fi
+
 export NODE_ENV=production
 export DEBUG=false
 
