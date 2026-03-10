@@ -2,6 +2,7 @@ import express from "express";
 import crypto from "crypto";
 // MongoDB-only: removed SQL fallback and imports
 import { authRequired, adminRequired } from "../middleware/auth.js";
+import { buildRateLimiter } from "../middleware/rateLimit.js";
 import { calculateRaceScores } from "../services/scoring.js";
 import { syncCompletedRaceResultsFromJolpica, syncLatestRaceResultsFromJolpica, syncSeasonFromJolpica } from "../services/jolpicaSync.js";
 import { deriveDeadlineAtFromCategories } from "../services/raceDeadline.js";
@@ -16,6 +17,12 @@ import {
 } from "../services/settings.js";
 
 const router = express.Router();
+
+const bootstrapAdminRateLimit = buildRateLimiter({
+  windowMs: 60 * 60 * 1000,
+  max: 5,
+  message: "Too many bootstrap admin attempts. Try again later."
+});
 
 const PREDICTION_PRESETS = {
   raceQualificationPositions: {
@@ -411,7 +418,7 @@ async function createRaceWeekend(payload) {
     }
   }
 
-router.post("/bootstrap/promote-admin", async (req, res) => {
+router.post("/bootstrap/promote-admin", bootstrapAdminRateLimit, async (req, res) => {
   const { email, bootstrapKey } = req.body;
 
   if (!config.bootstrapAdminKey) {

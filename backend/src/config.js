@@ -94,13 +94,21 @@ const emailFrom = String(process.env.EMAIL_FROM || "").trim();
 const emailReplyTo = String(process.env.EMAIL_REPLY_TO || "").trim();
 const resendApiKey = String(process.env.RESEND_API_KEY || "").trim();
 const emailPreviewFallback = process.env.EMAIL_PREVIEW_FALLBACK === "true" || (debug && process.env.EMAIL_PREVIEW_FALLBACK !== "false");
+const jwtSecret = String(process.env.JWT_SECRET || "").trim();
+
+if (!jwtSecret) {
+  throw new Error("JWT_SECRET must be configured");
+}
+
+const authCookieSecure = !debug;
+const authCookieSameSite = authCookieSecure ? "none" : "lax";
 
 export const config = {
   port,
   nodeEnv,
   debug,
   databaseUrl: process.env.DATABASE_URL,
-  jwtSecret: process.env.JWT_SECRET || "dev_secret",
+  jwtSecret,
   jwtExpiresIn: normalizeJwtExpiresIn(process.env.JWT_EXPIRES_IN),
   mongodbUri: process.env.MONGODB_URI || process.env.MONGO_URI || "",
   frontendUrlDebug,
@@ -120,5 +128,8 @@ export const config = {
   emailFrom,
   emailReplyTo,
   resendApiKey,
-  emailPreviewFallback
+  emailPreviewFallback,
+  authCookieName: "f1f_token",
+  authCookieSecure,
+  authCookieSameSite
 };

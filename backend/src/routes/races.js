@@ -49,6 +49,17 @@ router.get("/", authRequired, async (req, res) => {
     }
   }
 
+  if (role !== 'admin' && racesDocs.length > 0) {
+    const categoryCounts = await PickCategory.aggregate([
+      { $match: { race: { $in: racesDocs.map((race) => race._id) } } },
+      { $group: { _id: "$race", count: { $sum: 1 } } }
+    ]).exec();
+    const configuredRaceIds = new Set(
+      categoryCounts.filter((row) => row.count > 0).map((row) => String(row._id))
+    );
+    racesDocs = racesDocs.filter((race) => configuredRaceIds.has(String(race._id)));
+  }
+
   const withLockInfo = racesDocs.map((race) => {
     const lockAt = getLockAt(race.deadline_at, lockMinutes);
     return {
@@ -92,6 +103,7 @@ router.get("/:raceId", authRequired, async (req, res) => {
     const membershipDocs = await LeagueMember.find({ user: req.user.id, league: { $in: raceDoc.leagues || [] } }).populate({ path: 'league', select: 'name' }).lean().exec();
     availableLeagues = membershipDocs.map((m) => ({ id: String(m.league._id), name: m.league.name }));
     if (availableLeagues.length === 0) return res.status(403).json({ error: 'Race is not available in your leagues' });
+    if (categories.length === 0) return res.status(404).json({ error: 'Race not found' });
   }
 
   const lockAt = getLockAt(raceDoc.deadline_at, lockMinutes);

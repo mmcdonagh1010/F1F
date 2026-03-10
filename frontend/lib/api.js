@@ -1,4 +1,4 @@
-import { clearAuthSession, getStoredToken } from "./auth";
+import { clearAuthSession } from "./auth";
 
 const isDebug = process.env.NEXT_PUBLIC_DEBUG === "true" || process.env.NODE_ENV !== "production";
 export const API_BASE = isDebug
@@ -29,10 +29,8 @@ export async function publicApiFetch(path, options = {}) {
 }
 
 export async function apiFetch(path, options = {}) {
-  const token = getStoredToken();
   const headers = {
     "Content-Type": "application/json",
-    ...(token ? { Authorization: `Bearer ${token}` } : {}),
     ...(options.headers || {})
   };
 
@@ -60,4 +58,12 @@ export async function apiFetch(path, options = {}) {
   }
 
   return res.json();
+}
+
+export async function logoutApiSession() {
+  try {
+    await publicApiFetch("/auth/logout", { method: "POST" });
+  } catch {
+    // Clearing local auth state is sufficient if the server is already logged out.
+  }
 }

@@ -3,6 +3,8 @@ import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import { z } from "zod";
 import { config } from "../config.js";
+import { authRequired } from "../middleware/auth.js";
+import { buildRateLimiter } from "../middleware/rateLimit.js";
 import { connectMongo } from "../mongo.js";
 import User from "../models/User.js";
 import { createRawToken, hashToken } from "../services/authTokens.js";
@@ -37,6 +39,31 @@ const resetPasswordSchema = z.object({
   password: z.string().min(8)
 });
 
+const registerRateLimit = buildRateLimiter({
+  windowMs: 60 * 60 * 1000,
+  max: 10,
+  message: "Too many registration attempts. Try again later."
+});
+
+const loginRateLimit = buildRateLimiter({
+  windowMs: 15 * 60 * 1000,
+  max: 5,
+  skipSuccessfulRequests: true,
+  message: "Too many login attempts. Try again later."
+});
+
+const emailActionRateLimit = buildRateLimiter({
+  windowMs: 15 * 60 * 1000,
+  max: 5,
+  message: "Too many email requests. Try again later."
+});
+
+const resetPasswordRateLimit = buildRateLimiter({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  message: "Too many password reset attempts. Try again later."
+});
+
 function signToken(user) {
   const id = user.id || user._id || (user._id && user._id.toString());
   return jwt.sign(
@@ -55,7 +82,54 @@ function createVerificationTokenFields() {
   };
 }
 
-router.post("/register", async (req, res) => {
+function buildSessionUser(user) {
+  return {
+    id: String(user._id || user.id),
+    name: user.name,
+    email: user.email,
+    role: user.role
+  };
+}
+
+function getSessionExpiresAt(token) {
+  const decoded = jwt.decode(token);
+  if (!decoded || typeof decoded !== "object" || typeof decoded.exp !== "number") {
+    return null;
+  }
+
+  return new Date(decoded.exp * 1000).toISOString();
+}
+
+function getAuthCookieOptions(token) {
+  const expiresAt = getSessionExpiresAt(token);
+  const cookieOptions = {
+    httpOnly: true,
+    secure: config.authCookieSecure,
+    sameSite: config.authCookieSameSite,
+    path: "/"
+  };
+
+  if (expiresAt) {
+    cookieOptions.expires = new Date(expiresAt);
+  }
+
+  return cookieOptions;
+}
+
+function setAuthCookie(res, token) {
+  res.cookie(config.authCookieName, token, getAuthCookieOptions(token));
+}
+
+function clearAuthCookie(res) {
+  res.clearCookie(config.authCookieName, {
+    httpOnly: true,
+    secure: config.authCookieSecure,
+    sameSite: config.authCookieSameSite,
+    path: "/"
+  });
+}
+
+router.post("/register", registerRateLimit, async (req, res) => {
   const parsed = registerSchema.safeParse(req.body);
   if (!parsed.success) {
     return res.status(400).json({ error: parsed.error.flatten() });
@@ -100,7 +174,7 @@ router.post("/register", async (req, res) => {
   }
 });
 
-router.post("/login", async (req, res) => {
+router.post("/login", loginRateLimit, async (req, res) => {
   const parsed = loginSchema.safeParse(req.body);
   if (!parsed.success) {
     return res.status(400).json({ error: parsed.error.flatten() });
@@ -122,8 +196,33 @@ router.post("/login", async (req, res) => {
   const ok = await bcrypt.compare(password, found.password_hash);
   if (!ok) return res.status(401).json({ error: 'Invalid credentials' });
 
-  const token = signToken({ id: String(found._id), name: found.name, email: found.email, role: found.role });
-  return res.json({ token, user: { id: String(found._id), name: found.name, email: found.email, role: found.role } });
+  const sessionUser = buildSessionUser(found);
+  const token = signToken(sessionUser);
+  setAuthCookie(res, token);
+
+  return res.json({
+    user: sessionUser,
+    sessionExpiresAt: getSessionExpiresAt(token)
+  });
+});
+
+router.get("/me", authRequired, async (req, res) => {
+  await connectMongo();
+  const found = await User.findById(req.user.id).lean().exec();
+  if (!found) {
+    clearAuthCookie(res);
+    return res.status(401).json({ error: "Session is no longer valid" });
+  }
+
+  return res.json({
+    user: buildSessionUser(found),
+    sessionExpiresAt: req.user.exp ? new Date(req.user.exp * 1000).toISOString() : null
+  });
+});
+
+router.post("/logout", (_req, res) => {
+  clearAuthCookie(res);
+  return res.json({ message: "Logged out" });
 });
 
 router.post("/verify-email", async (req, res) => {
@@ -149,7 +248,7 @@ router.post("/verify-email", async (req, res) => {
   return res.json({ message: "Email verified. You can now log in." });
 });
 
-router.post("/verify-email/resend", async (req, res) => {
+router.post("/verify-email/resend", emailActionRateLimit, async (req, res) => {
   const email = String(req.body?.email || "").trim().toLowerCase();
   if (!email) return res.status(400).json({ error: "email is required" });
 
@@ -190,7 +289,7 @@ router.post("/verify-email/resend", async (req, res) => {
   }
 });
 
-router.post("/forgot-password", async (req, res) => {
+router.post("/forgot-password", emailActionRateLimit, async (req, res) => {
   const parsed = forgotPasswordSchema.safeParse(req.body);
   if (!parsed.success) {
     return res.status(400).json({ error: parsed.error.flatten() });
@@ -231,7 +330,7 @@ router.post("/forgot-password", async (req, res) => {
   }
 });
 
-router.post("/reset-password", async (req, res) => {
+router.post("/reset-password", resetPasswordRateLimit, async (req, res) => {
   const parsed = resetPasswordSchema.safeParse(req.body);
   if (!parsed.success) {
     return res.status(400).json({ error: parsed.error.flatten() });

@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { clearAuthSession, getStoredUser } from "../lib/auth";
+import { logoutApiSession } from "../lib/api";
 
 const items = [
   { href: "/dashboard", label: "Predictions" },
@@ -21,7 +22,8 @@ export default function BottomNav() {
     setRole(getStoredUser()?.role || "player");
   }, []);
 
-  function logout() {
+  async function logout() {
+    await logoutApiSession();
     clearAuthSession();
     router.push("/login");
   }

@@ -14,6 +14,7 @@ import { startJolpicaAutoSyncJob } from "./jobs/jolpicaAutoSync.js";
 
 const app = express();
 
+app.set("trust proxy", 1);
 app.use(helmet());
 const allowedOrigins = new Set(config.corsAllowedOrigins || []);
 const allowedOriginSuffixes = config.corsAllowedOriginSuffixes || [];

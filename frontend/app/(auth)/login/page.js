@@ -23,7 +23,7 @@ export default function LoginPage() {
         method: "POST",
         body: JSON.stringify(form)
       });
-      storeAuthSession(res.token, res.user);
+      storeAuthSession(res.user, res.sessionExpiresAt);
       router.push("/dashboard");
     } catch (err) {
       if (err.data?.verificationRequired) {
