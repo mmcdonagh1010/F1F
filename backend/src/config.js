@@ -102,6 +102,7 @@ if (!jwtSecret) {
 
 const authCookieSecure = !debug;
 const authCookieSameSite = authCookieSecure ? "none" : "lax";
+const authCookiePartitioned = authCookieSecure;
 
 export const config = {
   port,
@@ -131,5 +132,6 @@ export const config = {
   emailPreviewFallback,
   authCookieName: "f1f_token",
   authCookieSecure,
-  authCookieSameSite
+  authCookieSameSite,
+  authCookiePartitioned
 };

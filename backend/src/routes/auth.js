@@ -106,6 +106,7 @@ function getAuthCookieOptions(token) {
     httpOnly: true,
     secure: config.authCookieSecure,
     sameSite: config.authCookieSameSite,
+    partitioned: config.authCookiePartitioned,
     path: "/"
   };
 
@@ -125,6 +126,7 @@ function clearAuthCookie(res) {
     httpOnly: true,
     secure: config.authCookieSecure,
     sameSite: config.authCookieSameSite,
+    partitioned: config.authCookiePartitioned,
     path: "/"
   });
 }
