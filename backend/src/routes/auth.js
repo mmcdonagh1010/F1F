@@ -203,6 +203,7 @@ router.post("/login", loginRateLimit, async (req, res) => {
   setAuthCookie(res, token);
 
   return res.json({
+    token,
     user: sessionUser,
     sessionExpiresAt: getSessionExpiresAt(token)
   });

@@ -1,4 +1,4 @@
-import { clearAuthSession } from "./auth";
+import { clearAuthSession, getStoredToken } from "./auth";
 
 const isDebug = process.env.NEXT_PUBLIC_DEBUG === "true" || process.env.NODE_ENV !== "production";
 export const API_BASE = isDebug
@@ -6,8 +6,10 @@ export const API_BASE = isDebug
   : process.env.NEXT_PUBLIC_API_BASE_PROD || process.env.NEXT_PUBLIC_API_BASE || "http://localhost:4000/api";
 
 export async function publicApiFetch(path, options = {}) {
+  const token = getStoredToken();
   const headers = {
     "Content-Type": "application/json",
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
     ...(options.headers || {})
   };
 
@@ -29,8 +31,10 @@ export async function publicApiFetch(path, options = {}) {
 }
 
 export async function apiFetch(path, options = {}) {
+  const token = getStoredToken();
   const headers = {
     "Content-Type": "application/json",
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
     ...(options.headers || {})
   };
 

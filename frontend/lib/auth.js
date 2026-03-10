@@ -1,3 +1,4 @@
+const TOKEN_KEY = "f1f_token";
 const USER_KEY = "f1f_user";
 const SESSION_EXPIRES_AT_KEY = "f1f_session_expires_at";
 const SERVER_SESSION_EXPIRES_AT_KEY = "f1f_server_session_expires_at";
@@ -17,12 +18,28 @@ function writeStorageValue(key, value) {
 }
 
 function removeStoredAuthKeys() {
+  sessionStorage.removeItem(TOKEN_KEY);
   sessionStorage.removeItem(SESSION_EXPIRES_AT_KEY);
   sessionStorage.removeItem(USER_KEY);
   sessionStorage.removeItem(SERVER_SESSION_EXPIRES_AT_KEY);
+  localStorage.removeItem(TOKEN_KEY);
   localStorage.removeItem(SESSION_EXPIRES_AT_KEY);
   localStorage.removeItem(USER_KEY);
   localStorage.removeItem(SERVER_SESSION_EXPIRES_AT_KEY);
+}
+
+function getStoredTokenValue() {
+  return readStorageValue(TOKEN_KEY);
+}
+
+function writeStoredTokenValue(token) {
+  if (!token) {
+    sessionStorage.removeItem(TOKEN_KEY);
+    localStorage.removeItem(TOKEN_KEY);
+    return;
+  }
+
+  writeStorageValue(TOKEN_KEY, token);
 }
 
 function getStoredExpiryAt() {
@@ -93,8 +110,9 @@ export function isAuthSessionExpired() {
 export function hasStoredSession() {
   if (typeof window === "undefined") return null;
   const rawUser = readStorageValue(USER_KEY);
+  const token = getStoredTokenValue();
 
-  if (!rawUser) return false;
+  if (!rawUser || !token) return false;
 
   if (isAuthSessionExpired()) {
     removeStoredAuthKeys();
@@ -120,8 +138,15 @@ export function getStoredUser() {
   }
 }
 
-export function storeAuthSession(user, sessionExpiresAt = null) {
+export function getStoredToken() {
+  if (typeof window === "undefined") return "";
+  if (!hasStoredSession()) return "";
+  return getStoredTokenValue();
+}
+
+export function storeAuthSession(user, sessionExpiresAt = null, token = "") {
   if (typeof window === "undefined") return;
+  writeStoredTokenValue(token || getStoredTokenValue());
   writeStorageValue(USER_KEY, JSON.stringify(user));
   const parsedServerExpiry = sessionExpiresAt ? new Date(sessionExpiresAt).getTime() : 0;
   writeStoredServerExpiryAt(Number.isFinite(parsedServerExpiry) ? parsedServerExpiry : 0);
