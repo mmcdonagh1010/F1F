@@ -9,6 +9,10 @@ const router = express.Router();
 router.use(authRequired);
 
 router.get("/mine", async (req, res) => {
+  if (req.user.role === "admin") {
+    return res.json([]);
+  }
+
   const userId = req.user.id;
   const members = await LeagueMember.find({ user: userId }).populate('league').sort({ joined_at: -1 }).exec();
 
@@ -23,6 +27,10 @@ router.get("/mine", async (req, res) => {
 });
 
 router.post("/join", async (req, res) => {
+  if (req.user.role === "admin") {
+    return res.status(403).json({ error: "Admin users cannot join leagues for predictions" });
+  }
+
   const inviteCode = String(req.body?.inviteCode || "").trim().toUpperCase();
   if (!inviteCode) {
     return res.status(400).json({ error: "inviteCode is required" });

@@ -673,7 +673,9 @@ router.get("/leagues/:leagueId/members", async (req, res) => {
     if (!league) return res.status(404).json({ error: 'League not found' });
 
     const members = await LeagueMember.find({ league: league._id }).sort({ joined_at: 1 }).populate({ path: 'user', select: 'name email role' }).lean().exec();
-    const mapped = members.map((m) => ({ id: m.user ? String(m.user._id) : null, name: m.user ? m.user.name : null, email: m.user ? m.user.email : null, role: m.user ? m.user.role : null, joined_at: m.joined_at }));
+    const mapped = members
+      .filter((member) => member.user && member.user.role !== 'admin')
+      .map((m) => ({ id: m.user ? String(m.user._id) : null, name: m.user ? m.user.name : null, email: m.user ? m.user.email : null, role: m.user ? m.user.role : null, joined_at: m.joined_at }));
 
     return res.json({ league: { id: String(league._id), name: league.name, invite_code: league.invite_code }, members: mapped });
   } catch (err) {

@@ -94,6 +94,10 @@ router.get("/:raceId", authRequired, async (req, res) => {
   const { raceId } = req.params;
   const requestedLeagueId = String(req.query.leagueId || "").trim() || null;
 
+  if (req.user.role === 'admin') {
+    return res.status(403).json({ error: 'Admin users cannot submit league predictions' });
+  }
+
   // determine member leagues for this user and race
   const leagueMembers = await LeagueMember.find({ league: { $in: (await Race.findById(raceId).select('leagues league').lean().exec()).leagues || [] }, user: req.user.id }).lean().exec();
   if (!leagueMembers || leagueMembers.length === 0) return res.status(403).json({ error: "Race is not available in your leagues" });
@@ -124,6 +128,10 @@ router.post("/:raceId", authRequired, async (req, res) => {
   const { raceId } = req.params;
   const { picks, leagueId, applyToAllLeagues, mode = "submit" } = req.body;
   const lockMinutes = await getPickLockMinutesBeforeDeadline();
+
+  if (req.user.role === 'admin') {
+    return res.status(403).json({ error: 'Admin users cannot submit league predictions' });
+  }
 
   if (!["draft", "submit"].includes(mode)) {
     return res.status(400).json({ error: "mode must be 'draft' or 'submit'" });
@@ -242,15 +250,26 @@ router.get("/:raceId/reveal", authRequired, async (req, res) => {
   if (!race) return res.status(404).json({ error: 'Race not found' });
   if (getLockAt(race.deadline_at, lockMinutes).getTime() > Date.now()) return res.status(403).json({ error: 'Other picks unlock after race lock' });
 
-  const memberLeagues = await LeagueMember.find({ league: { $in: race.leagues || [] }, user: req.user.id }).lean().exec();
-  if (!memberLeagues || memberLeagues.length === 0) return res.status(403).json({ error: 'Race is not available in your leagues' });
+  let availableLeagueIds = [];
+  if (req.user.role === 'admin') {
+    availableLeagueIds = (race.leagues || []).map((leagueId) => String(leagueId));
+  } else {
+    const memberLeagues = await LeagueMember.find({ league: { $in: race.leagues || [] }, user: req.user.id }).lean().exec();
+    if (!memberLeagues || memberLeagues.length === 0) return res.status(403).json({ error: 'Race is not available in your leagues' });
+    availableLeagueIds = memberLeagues.map((m) => String(m.league));
+  }
 
-  const availableLeagueIds = memberLeagues.map((m) => String(m.league));
   const effectiveLeagueIdLocal = requestedLeagueId || availableLeagueIds[0];
-  if (!availableLeagueIds.includes(effectiveLeagueIdLocal)) return res.status(403).json({ error: 'You are not a member of the selected league for this race' });
+  if (!availableLeagueIds.includes(effectiveLeagueIdLocal)) return res.status(403).json({ error: req.user.role === 'admin' ? 'Selected league is not available for this race' : 'You are not a member of the selected league for this race' });
 
-  const allPicks = await Pick.find({ race: raceId, league: effectiveLeagueIdLocal, status: 'submitted' }).populate({ path: 'user', select: 'name' }).populate({ path: 'category', select: 'name display_order' }).lean().exec();
-  const mapped = allPicks.map((p) => ({ player_name: p.user ? p.user.name : null, category_id: String(p.category ? p.category._id : p.category), category_name: p.category ? p.category.name : null, value_text: p.value_text, value_number: p.value_number }));
+  const allPicks = await Pick.find({ race: raceId, league: effectiveLeagueIdLocal, status: 'submitted' })
+    .populate({ path: 'user', select: 'name role' })
+    .populate({ path: 'category', select: 'name display_order' })
+    .lean()
+    .exec();
+  const mapped = allPicks
+    .filter((pick) => pick.user && pick.user.role !== 'admin')
+    .map((p) => ({ player_name: p.user ? p.user.name : null, category_id: String(p.category ? p.category._id : p.category), category_name: p.category ? p.category.name : null, value_text: p.value_text, value_number: p.value_number }));
   return res.json({ leagueId: effectiveLeagueIdLocal, picks: mapped });
 });
 

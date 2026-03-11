@@ -15,6 +15,17 @@ function formatDate(value) {
   });
 }
 
+function getNextRaceSessions(race) {
+  if (!race) return [];
+
+  return [
+    { label: "Race start", value: race.raceDate },
+    { label: "Sprint Race start", value: race.sprintDate },
+    { label: "Sprint Qualification start", value: race.sprintQualifyingDate },
+    { label: "Qualification start", value: race.qualifyingDate }
+  ].filter((session) => Boolean(session.value));
+}
+
 export default function LiveF1Panel({ compact = false, season }) {
   const [data, setData] = useState(null);
   const [error, setError] = useState("");
@@ -61,6 +72,7 @@ export default function LiveF1Panel({ compact = false, season }) {
   const upcoming = compact ? data.upcomingRaces.slice(0, 2) : data.upcomingRaces;
   const standingsLabel = data.standingsSeason && data.standingsSeason !== data.season ? `${data.standingsSeason} standings` : `${data.season} standings`;
   const latestResultLabel = data.latestResultSeason && data.latestResultSeason !== data.season ? `${data.latestResultSeason} latest completed race` : "Latest Result";
+  const nextRaceSessions = getNextRaceSessions(data.nextRace);
 
   return (
     <section className="card overflow-hidden">
@@ -92,7 +104,13 @@ export default function LiveF1Panel({ compact = false, season }) {
               <p className="mt-2 text-2xl font-extrabold text-white">{data.nextRace.name}</p>
               <p className="mt-1 text-sm text-slate-300">Round {data.nextRace.round} at {data.nextRace.circuitName}</p>
               <p className="mt-1 text-sm text-slate-400">{data.nextRace.locality}, {data.nextRace.country}</p>
-              <p className="mt-3 text-sm font-semibold text-accent-cyan">Race start: {formatDate(data.nextRace.raceDate)}</p>
+              <div className="mt-3 space-y-1 text-sm">
+                {nextRaceSessions.map((session) => (
+                  <p key={session.label} className="font-semibold text-accent-cyan">
+                    {session.label}: {formatDate(session.value)}
+                  </p>
+                ))}
+              </div>
             </>
           ) : (
             <p className="mt-2 text-sm text-slate-300">No upcoming race is scheduled for this season snapshot.</p>

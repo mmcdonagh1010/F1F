@@ -88,6 +88,9 @@ function normalizeRace(race) {
   const sprintDate = race?.Sprint?.date
     ? new Date(`${race.Sprint.date}T${race?.Sprint?.time || "00:00:00Z"}`)
     : null;
+  const sprintQualifyingDate = race?.SprintQualifying?.date
+    ? new Date(`${race.SprintQualifying.date}T${race?.SprintQualifying?.time || "00:00:00Z"}`)
+    : null;
 
   return {
     season: Number(race?.season) || null,
@@ -100,6 +103,7 @@ function normalizeRace(race) {
     country: race?.Circuit?.Location?.country || null,
     qualifyingDate: toIsoIfValid(qualifyingDate),
     sprintDate: toIsoIfValid(sprintDate),
+    sprintQualifyingDate: toIsoIfValid(sprintQualifyingDate),
     hasSprint: Boolean(race?.Sprint)
   };
 }

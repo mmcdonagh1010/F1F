@@ -22,6 +22,15 @@ async function getUserLeagues(userId, role = "player") {
   return members.map((m) => ({ id: String(m.league._id), name: m.league.name }));
 }
 
+async function getPredictionLeagueMembers(leagueId) {
+  const members = await LeagueMember.find({ league: leagueId })
+    .populate({ path: 'user', select: 'name role' })
+    .lean()
+    .exec();
+
+  return members.filter((member) => member.user && member.user.role !== 'admin');
+}
+
 function resolveLeagueId(userLeagues, requestedLeagueId) {
   if (!userLeagues || userLeagues.length === 0) return null;
   const ids = userLeagues.map((league) => league.id);
@@ -121,7 +130,7 @@ router.get("/season", authRequired, async (req, res) => {
   const availableYears = availableYearsRes.map((r) => r._id);
 
   const raceIds = races.map((r) => String(r._id));
-  const members = await LeagueMember.find({ league: leagueId }).populate({ path: 'user', select: 'name' }).lean().exec();
+  const members = await getPredictionLeagueMembers(leagueId);
 
   const pointsDocs = await Score.find({ league: leagueId, race: { $in: raceIds } }).lean().exec();
   const pointsByUser = new Map();
@@ -171,7 +180,7 @@ router.get("/latest", authRequired, async (req, res) => {
   if (!latestRace) return res.json({ year, leagueId, availableLeagues: userLeagues, latestRace: null, categories: [], rows: [] });
 
   const categories = await PickCategory.find({ race: latestRace._id }).sort({ display_order: 1 }).lean().exec();
-  const members = await LeagueMember.find({ league: leagueId }).populate({ path: 'user', select: 'name' }).lean().exec();
+  const members = await getPredictionLeagueMembers(leagueId);
   const picks = await Pick.find({ race: latestRace._id, league: leagueId, status: 'submitted' }).lean().exec();
   const results = await Result.find({ race: latestRace._id }).lean().exec();
 
@@ -237,8 +246,11 @@ router.get("/season/player/:userId", authRequired, async (req, res) => {
   const membership = await LeagueMember.findOne({ league: leagueId, user: userId }).lean().exec();
   if (!membership) return res.status(403).json({ error: "User is not a member of this league" });
 
-  const userDoc = await User.findById(userId).select('name').lean().exec();
+  const userDoc = await User.findById(userId).select('name role').lean().exec();
   if (!userDoc) return res.status(404).json({ error: 'User not found' });
+  if (userDoc.role === 'admin') {
+    return res.status(403).json({ error: 'Admin users do not participate in league predictions' });
+  }
 
   const racesDocs = await Race.find({ leagues: leagueId, race_date: { $gte: new Date(`${year}-01-01`), $lte: new Date(`${year}-12-31`) } })
     .sort({ race_date: 1 })
@@ -359,7 +371,7 @@ router.get("/race/:raceId", authRequired, async (req, res) => {
   }
 
   try {
-    const members = await LeagueMember.find({ league: leagueId }).populate({ path: 'user', select: 'name' }).lean().exec();
+    const members = await getPredictionLeagueMembers(leagueId);
     const rows = [];
     for (const m of members) {
       const uid = m.user ? String(m.user._id) : null;

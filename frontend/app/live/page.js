@@ -18,6 +18,17 @@ function formatDate(value) {
   });
 }
 
+function getNextRaceSessions(race) {
+  if (!race) return [];
+
+  return [
+    { label: "Race start", value: race.raceDate },
+    { label: "Sprint Race start", value: race.sprintDate },
+    { label: "Sprint Qualification start", value: race.sprintQualifyingDate },
+    { label: "Qualification start", value: race.qualifyingDate }
+  ].filter((session) => Boolean(session.value));
+}
+
 function LiveF1PageContent() {
   const currentYear = new Date().getUTCFullYear();
   const router = useRouter();
@@ -66,6 +77,7 @@ function LiveF1PageContent() {
   }
 
   const seasonOptions = [currentYear, currentYear - 1, currentYear - 2].map(String);
+  const nextRaceSessions = getNextRaceSessions(data?.nextRace);
 
   return (
     <div className="space-y-4 pb-24">
@@ -104,7 +116,13 @@ function LiveF1PageContent() {
                   <p className="mt-2 font-display text-3xl text-white">{data.nextRace.name}</p>
                   <p className="mt-1 text-sm text-slate-300">Round {data.nextRace.round} at {data.nextRace.circuitName}</p>
                   <p className="text-sm text-slate-400">{data.nextRace.locality}, {data.nextRace.country}</p>
-                  <p className="mt-3 text-sm font-semibold text-accent-cyan">{formatDate(data.nextRace.raceDate)}</p>
+                  <div className="mt-3 space-y-1 text-sm">
+                    {nextRaceSessions.map((session) => (
+                      <p key={session.label} className="font-semibold text-accent-cyan">
+                        {session.label}: {formatDate(session.value)}
+                      </p>
+                    ))}
+                  </div>
                 </>
               ) : <p className="mt-2 text-sm text-slate-300">No next race available.</p>}
             </article>

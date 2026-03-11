@@ -6,6 +6,7 @@ import PickCategory from "../models/PickCategory.js";
 import RaceDriver from "../models/RaceDriver.js";
 import League from "../models/League.js";
 import LeagueMember from "../models/LeagueMember.js";
+import Result from "../models/Result.js";
 import mongoose from "mongoose";
 
 const router = express.Router();
@@ -60,6 +61,14 @@ router.get("/", authRequired, async (req, res) => {
     racesDocs = racesDocs.filter((race) => configuredRaceIds.has(String(race._id)));
   }
 
+  const resultCounts = racesDocs.length > 0
+    ? await Result.aggregate([
+        { $match: { race: { $in: racesDocs.map((race) => race._id) } } },
+        { $group: { _id: '$race', count: { $sum: 1 } } }
+      ]).exec()
+    : [];
+  const resultsByRaceId = new Map(resultCounts.map((row) => [String(row._id), row.count > 0]));
+
   const withLockInfo = racesDocs.map((race) => {
     const lockAt = getLockAt(race.deadline_at, lockMinutes);
     return {
@@ -73,6 +82,7 @@ router.get("/", authRequired, async (req, res) => {
       status: race.status || null,
       is_visible: Boolean(race.is_visible),
       predictions_live: arePredictionsLive(race),
+      has_results: Boolean(resultsByRaceId.get(String(race._id))),
       lock_at: lockAt,
       is_locked: new Date(lockAt).getTime() <= Date.now()
     };
@@ -92,6 +102,7 @@ router.get("/:raceId", authRequired, async (req, res) => {
 
   const categories = await PickCategory.find({ race: raceId }).sort({ display_order: 1 }).lean().exec();
   const drivers = await RaceDriver.find({ race: raceId }).sort({ display_order: 1 }).lean().exec();
+  const hasResults = Boolean(await Result.exists({ race: raceId }));
 
   let availableLeagues = [];
   if (role === 'admin') {
@@ -119,6 +130,7 @@ router.get("/:raceId", authRequired, async (req, res) => {
     status: raceDoc.status || null,
     is_visible: Boolean(raceDoc.is_visible),
     predictions_live: arePredictionsLive(raceDoc),
+    has_results: hasResults,
     available_leagues: availableLeagues,
     lock_at: lockAt,
     is_locked: new Date(lockAt).getTime() <= Date.now(),

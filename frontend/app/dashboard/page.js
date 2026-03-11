@@ -48,8 +48,15 @@ export default function DashboardPage() {
   }
 
   const scheduledRaces = races
-    .filter((race) => race.status !== "completed")
-    .sort((a, b) => new Date(a.deadline_at).getTime() - new Date(b.deadline_at).getTime());
+    .filter((race) => race.status !== "completed" || race.has_results)
+    .sort((a, b) => {
+      if (a.has_results && !b.has_results) return 1;
+      if (!a.has_results && b.has_results) return -1;
+      if (a.has_results && b.has_results) {
+        return new Date(b.deadline_at).getTime() - new Date(a.deadline_at).getTime();
+      }
+      return new Date(a.deadline_at).getTime() - new Date(b.deadline_at).getTime();
+    });
 
   const displayedRaces = showAllUpcoming ? scheduledRaces : scheduledRaces.slice(0, 1);
 
@@ -95,7 +102,9 @@ export default function DashboardPage() {
           <p className="text-sm text-slate-300">{race.circuit_name}</p>
           <p className="mt-2 text-xs text-slate-400">Deadline: {new Date(race.deadline_at).toLocaleString()}</p>
           <p className="mt-1 text-xs text-slate-400">
-            {race.is_visible === false
+            {race.has_results
+              ? "Results are available for this race."
+              : race.is_visible === false
               ? "This race is currently hidden by the admin."
               : race.predictions_live === false
               ? "Predictions are not live yet."
@@ -103,7 +112,14 @@ export default function DashboardPage() {
               ? "Predictions are closed for this race."
               : "Predictions are live."}
           </p>
-          {race.is_visible === false || race.predictions_live === false || race.is_locked ? (
+          {race.has_results ? (
+            <Link
+              href={`/results/${race.id}`}
+              className="tap mt-3 block rounded-xl bg-accent-cyan px-3 py-2 text-center font-bold text-track-900"
+            >
+              View Results
+            </Link>
+          ) : race.is_visible === false || race.predictions_live === false || race.is_locked ? (
             <button
               type="button"
               disabled
