@@ -1,11 +1,11 @@
 {
-  "name": "Fantasy F1 League",
-  "short_name": "F1 Picks",
+  "name": "turn1carnage",
+  "short_name": "turn1carnage",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#06161b",
   "theme_color": "#ff3b30",
-  "description": "Mobile-first private Fantasy Formula 1 picks app",
+  "description": "turn1carnage Formula 1 picks app",
   "icons": [
     {
       "src": "/icon-192.png",

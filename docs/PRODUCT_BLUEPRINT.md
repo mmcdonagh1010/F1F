@@ -1,4 +1,4 @@
-# Fantasy F1 Picks League Product Blueprint
+# turn1carnage Product Blueprint
 
 ## 1. Product Architecture Diagram
 

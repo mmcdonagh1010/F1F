@@ -6,6 +6,8 @@ import { useParams, useSearchParams } from "next/navigation";
 import Header from "../../../../components/Header";
 import BottomNav from "../../../../components/BottomNav";
 import { publicApiFetch } from "../../../../lib/api";
+import { getDriverVisual, getTeamVisual, resolveVisualOverride } from "../../../../lib/f1Media";
+import { useF1MediaOverrides } from "../../../../lib/f1MediaOverrides";
 
 function formatDate(value) {
   if (!value) return "TBC";
@@ -22,6 +24,10 @@ function LiveTeamDetailPageContent() {
   const season = searchParams.get("season") || String(new Date().getUTCFullYear());
   const [detail, setDetail] = useState(null);
   const [error, setError] = useState("");
+  const mediaOverrides = useF1MediaOverrides();
+  const teamVisual = detail
+    ? resolveVisualOverride(getTeamVisual(detail.team), mediaOverrides.teams?.[detail.team.id])
+    : null;
 
   useEffect(() => {
     let active = true;
@@ -62,6 +68,7 @@ function LiveTeamDetailPageContent() {
           ) : null}
           <section className="card p-4">
             <p className="text-xs font-bold uppercase tracking-[0.25em] text-accent-cyan">Constructor</p>
+            <img src={teamVisual.src} alt={teamVisual.alt} className="mt-3 h-44 w-full rounded-2xl object-cover" />
             <h2 className="mt-2 font-display text-4xl text-white">{detail.team.name}</h2>
             <p className="mt-1 text-sm text-slate-300">{detail.team.nationality || "Unknown nationality"}</p>
             {detail.resultSeason && String(detail.resultSeason) !== String(season) ? (
@@ -90,16 +97,21 @@ function LiveTeamDetailPageContent() {
           <section className="card p-4">
             <p className="text-xs font-bold uppercase tracking-[0.25em] text-accent-cyan">Drivers</p>
             <div className="mt-4 grid gap-3 md:grid-cols-2">
-              {detail.drivers.map((driver) => (
+              {detail.drivers.map((driver) => {
+                const driverVisual = resolveVisualOverride(getDriverVisual(driver, detail.team), mediaOverrides.drivers?.[driver.id]);
+
+                return (
                 <Link
                   key={driver.id || driver.fullName}
                   href={`/live/drivers/${driver.id}?season=${season}`}
                   className="rounded-2xl border border-white/10 bg-black/10 px-4 py-3 text-white"
                 >
+                  <img src={driverVisual.src} alt={driverVisual.alt} className="mb-3 h-28 w-full rounded-2xl object-cover" />
                   <p className="font-semibold">{driver.fullName}</p>
                   <p className="text-sm text-slate-400">{driver.nationality || "Unknown nationality"}</p>
                 </Link>
-              ))}
+                );
+              })}
             </div>
           </section>
 

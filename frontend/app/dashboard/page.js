@@ -8,6 +8,7 @@ import LiveF1Panel from "../../components/LiveF1Panel";
 import { apiFetch } from "../../lib/api";
 
 export default function DashboardPage() {
+  const nearestRaceWindowMs = 24 * 60 * 60 * 1000;
   const [races, setRaces] = useState([]);
   const [showAllUpcoming, setShowAllUpcoming] = useState(false);
   const [inviteCode, setInviteCode] = useState("");
@@ -58,7 +59,17 @@ export default function DashboardPage() {
       return new Date(a.deadline_at).getTime() - new Date(b.deadline_at).getTime();
     });
 
-  const displayedRaces = showAllUpcoming ? scheduledRaces : scheduledRaces.slice(0, 1);
+  const nearestRaceCutoff = Date.now() - nearestRaceWindowMs;
+  const nearestRaceCandidates = races
+    .filter((race) => race.status !== "completed" || race.has_results)
+    .filter((race) => {
+      const raceTime = new Date(race.race_date || race.deadline_at).getTime();
+      if (Number.isNaN(raceTime)) return true;
+      return raceTime >= nearestRaceCutoff;
+    })
+    .sort((a, b) => new Date(a.race_date || a.deadline_at).getTime() - new Date(b.race_date || b.deadline_at).getTime());
+
+  const displayedRaces = showAllUpcoming ? scheduledRaces : nearestRaceCandidates.slice(0, 1);
 
   return (
     <div className="space-y-4 pb-24">

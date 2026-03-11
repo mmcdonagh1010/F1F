@@ -1,6 +1,6 @@
-# Fantasy F1 Picks League
+# turn1carnage
 
-Mobile-first Fantasy Formula 1 picks application for private leagues.
+Mobile-first Formula 1 picks application for private leagues under the turn1carnage brand.
 
 ## Stack
 - Frontend: Next.js + Tailwind CSS + PWA (`frontend/`)

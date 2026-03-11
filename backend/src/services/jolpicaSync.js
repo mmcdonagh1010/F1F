@@ -33,11 +33,16 @@ async function parseDeadlineAt(raceDateIso, race) {
   if (season && Number.isInteger(round) && round > 0) {
     try {
       const schedule = await fetchRaceSchedule({ season, round });
+      if (schedule?.sprintQualifyingDateIso) return schedule.sprintQualifyingDateIso;
       if (schedule?.qualifyingDateIso) return schedule.qualifyingDateIso;
     } catch {
       // Fall back to the schedule embedded in the sync payload.
     }
   }
+
+  const sprintQualifyingDate = race?.SprintQualifying?.date;
+  const sprintQualifyingTime = race?.SprintQualifying?.time || "00:00:00Z";
+  if (sprintQualifyingDate) return new Date(`${sprintQualifyingDate}T${sprintQualifyingTime}`).toISOString();
 
   const qualifyingDate = race?.Qualifying?.date;
   const qualifyingTime = race?.Qualifying?.time || "00:00:00Z";

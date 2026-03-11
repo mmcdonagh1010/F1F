@@ -6,6 +6,8 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import Header from "../../components/Header";
 import BottomNav from "../../components/BottomNav";
 import { publicApiFetch } from "../../lib/api";
+import { getCircuitVisual, getDriverVisual, getRaceVisualKey, getTeamVisual, resolveVisualOverride } from "../../lib/f1Media";
+import { useF1MediaOverrides } from "../../lib/f1MediaOverrides";
 
 function formatDate(value) {
   if (!value) return "TBC";
@@ -40,6 +42,7 @@ function LiveF1PageContent() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const mediaOverrides = useF1MediaOverrides();
 
   useEffect(() => {
     setSeason(initialSeason);
@@ -78,6 +81,12 @@ function LiveF1PageContent() {
 
   const seasonOptions = [currentYear, currentYear - 1, currentYear - 2].map(String);
   const nextRaceSessions = getNextRaceSessions(data?.nextRace);
+  const nextRaceVisual = data?.nextRace
+    ? resolveVisualOverride(getCircuitVisual(data.nextRace), mediaOverrides.races?.[getRaceVisualKey(data.nextRace)])
+    : null;
+  const latestRaceVisual = data?.latestRace
+    ? resolveVisualOverride(getCircuitVisual(data.latestRace), mediaOverrides.races?.[getRaceVisualKey(data.latestRace)])
+    : null;
 
   return (
     <div className="space-y-4 pb-24">
@@ -113,6 +122,7 @@ function LiveF1PageContent() {
               <p className="text-xs font-bold uppercase tracking-[0.25em] text-accent-cyan">Next Race</p>
               {data.nextRace ? (
                 <>
+                  {nextRaceVisual ? <img src={nextRaceVisual.src} alt={nextRaceVisual.alt} className="h-40 w-full rounded-2xl object-cover" /> : null}
                   <p className="mt-2 font-display text-3xl text-white">{data.nextRace.name}</p>
                   <p className="mt-1 text-sm text-slate-300">Round {data.nextRace.round} at {data.nextRace.circuitName}</p>
                   <p className="text-sm text-slate-400">{data.nextRace.locality}, {data.nextRace.country}</p>
@@ -131,6 +141,7 @@ function LiveF1PageContent() {
               <p className="text-xs font-bold uppercase tracking-[0.25em] text-accent-cyan">Latest Completed Race</p>
               {data.latestRace ? (
                 <>
+                  {latestRaceVisual ? <img src={latestRaceVisual.src} alt={latestRaceVisual.alt} className="h-40 w-full rounded-2xl object-cover" /> : null}
                   <p className="mt-2 font-display text-3xl text-white">{data.latestRace.name}</p>
                   <p className="mt-1 text-sm text-slate-300">{data.latestRace.circuitName}</p>
                   <div className="mt-3 space-y-2 text-sm text-slate-100">
@@ -156,15 +167,23 @@ function LiveF1PageContent() {
             </div>
 
             <div className="mt-4 space-y-3">
-              {data.calendar.map((race) => (
+              {data.calendar.map((race) => {
+                const circuitVisual = resolveVisualOverride(
+                  getCircuitVisual(race),
+                  mediaOverrides.races?.[getRaceVisualKey(race)]
+                );
+
+                return (
                 <article key={`${race.season}-${race.round}`} className="rounded-2xl border border-white/10 bg-black/10 p-4">
                   <div className="flex items-start justify-between gap-3">
                     <div>
+                      <img src={circuitVisual.src} alt={circuitVisual.alt} className="mb-3 h-24 w-full rounded-2xl object-cover md:hidden" />
                       <p className="text-sm font-semibold text-accent-cyan">Round {race.round}</p>
                       <p className="font-display text-2xl text-white">{race.name}</p>
                       <p className="text-sm text-slate-300">{race.circuitName}</p>
                       <p className="text-sm text-slate-400">{race.locality}, {race.country}</p>
                     </div>
+                    <img src={circuitVisual.src} alt={circuitVisual.alt} className="hidden h-24 w-44 rounded-2xl object-cover md:block" />
                     <div className="text-right text-xs text-slate-400">
                       <p>{formatDate(race.raceDate)}</p>
                       {race.qualifyingDate ? <p className="mt-1">Qualifying: {formatDate(race.qualifyingDate)}</p> : null}
@@ -172,7 +191,8 @@ function LiveF1PageContent() {
                     </div>
                   </div>
                 </article>
-              ))}
+                );
+              })}
             </div>
           </section>
 
@@ -180,13 +200,17 @@ function LiveF1PageContent() {
             <article className="card p-4">
               <p className="text-xs font-bold uppercase tracking-[0.25em] text-accent-cyan">Teams</p>
               <div className="mt-4 space-y-3">
-                {data.constructors.map((entry) => (
+                {data.constructors.map((entry) => {
+                  const teamVisual = resolveVisualOverride(getTeamVisual(entry.team), mediaOverrides.teams?.[entry.team.id]);
+
+                  return (
                   <Link
                     key={entry.team.id || entry.team.name}
                     href={`/live/teams/${entry.team.id}?season=${data.season}`}
                     className="block rounded-2xl border border-white/10 bg-black/10 px-4 py-3"
                   >
                     <div className="flex items-center justify-between gap-3">
+                      <img src={teamVisual.src} alt={teamVisual.alt} className="h-16 w-24 rounded-xl object-cover" />
                       <div>
                         <p className="font-semibold text-white">#{entry.position} {entry.team.name}</p>
                         <p className="text-sm text-slate-400">{entry.team.nationality || "Unknown nationality"}</p>
@@ -197,20 +221,25 @@ function LiveF1PageContent() {
                       </div>
                     </div>
                   </Link>
-                ))}
+                  );
+                })}
               </div>
             </article>
 
             <article className="card p-4">
               <p className="text-xs font-bold uppercase tracking-[0.25em] text-accent-cyan">Drivers</p>
               <div className="mt-4 space-y-3">
-                {data.driverStandings.map((entry) => (
+                {data.driverStandings.map((entry) => {
+                  const driverVisual = resolveVisualOverride(getDriverVisual(entry.driver, entry.team), mediaOverrides.drivers?.[entry.driver.id]);
+
+                  return (
                   <Link
                     key={entry.driver.id || entry.driver.fullName}
                     href={`/live/drivers/${entry.driver.id}?season=${data.season}`}
                     className="block rounded-2xl border border-white/10 bg-black/10 px-4 py-3"
                   >
                     <div className="flex items-center justify-between gap-3">
+                      <img src={driverVisual.src} alt={driverVisual.alt} className="h-16 w-24 rounded-xl object-cover" />
                       <div>
                         <p className="font-semibold text-white">#{entry.position} {entry.driver.fullName}</p>
                         <p className="text-sm text-slate-400">{entry.team?.name || "Team TBC"}</p>
@@ -221,7 +250,8 @@ function LiveF1PageContent() {
                       </div>
                     </div>
                   </Link>
-                ))}
+                  );
+                })}
               </div>
             </article>
           </section>

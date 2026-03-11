@@ -5,6 +5,8 @@ import { connectMongo } from "../mongo.js";
 
 const PICK_LOCK_KEY = "pick_lock_minutes_before_deadline";
 const JOLPICA_SYNC_STATUS_KEY = "jolpica_sync_status";
+const MEDIA_OVERRIDES_KEY = "f1_media_overrides";
+const MEDIA_OVERRIDE_TYPES = ["drivers", "teams", "races"];
 
 async function getSettingDoc(settingKey) {
   await connectMongo();
@@ -92,4 +94,100 @@ export async function setPickLockMinutesBeforeDeadline(minutes) {
   } catch (err) {
     throw err;
   }
+}
+
+function emptyMediaOverrides() {
+  return {
+    drivers: {},
+    teams: {},
+    races: {}
+  };
+}
+
+function normalizeMediaOverrideType(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (normalized === "driver") return "drivers";
+  if (normalized === "team") return "teams";
+  if (normalized === "race") return "races";
+  return MEDIA_OVERRIDE_TYPES.includes(normalized) ? normalized : null;
+}
+
+function normalizeMediaOverrideEntry(entityId, entry) {
+  if (!entry || typeof entry !== "object") return null;
+  const imageUrl = String(entry.imageUrl || "").trim();
+  if (!imageUrl) return null;
+
+  return {
+    entityId: String(entityId || entry.entityId || "").trim(),
+    imageUrl,
+    alt: String(entry.alt || "").trim(),
+    label: String(entry.label || "").trim(),
+    fileName: String(entry.fileName || "").trim(),
+    mimeType: String(entry.mimeType || "").trim(),
+    updatedAt: entry.updatedAt || null
+  };
+}
+
+function normalizeMediaOverrides(value) {
+  const fallback = emptyMediaOverrides();
+  if (!value || typeof value !== "object") return fallback;
+
+  MEDIA_OVERRIDE_TYPES.forEach((type) => {
+    const source = value[type];
+    if (!source || typeof source !== "object") return;
+
+    Object.entries(source).forEach(([entityId, entry]) => {
+      const normalizedEntry = normalizeMediaOverrideEntry(entityId, entry);
+      if (!normalizedEntry?.entityId) return;
+      fallback[type][normalizedEntry.entityId] = normalizedEntry;
+    });
+  });
+
+  return fallback;
+}
+
+export async function getMediaOverrides() {
+  const saved = await getJsonSetting(MEDIA_OVERRIDES_KEY, emptyMediaOverrides());
+  return normalizeMediaOverrides(saved);
+}
+
+export async function upsertMediaOverride({ entityType, entityId, imageUrl, alt = "", label = "", fileName = "", mimeType = "" }) {
+  const normalizedType = normalizeMediaOverrideType(entityType);
+  const normalizedId = String(entityId || "").trim();
+  if (!normalizedType) {
+    throw new Error("Invalid media override type");
+  }
+  if (!normalizedId) {
+    throw new Error("Media override entity id is required");
+  }
+
+  const overrides = await getMediaOverrides();
+  overrides[normalizedType][normalizedId] = {
+    entityId: normalizedId,
+    imageUrl: String(imageUrl || "").trim(),
+    alt: String(alt || "").trim(),
+    label: String(label || "").trim(),
+    fileName: String(fileName || "").trim(),
+    mimeType: String(mimeType || "").trim(),
+    updatedAt: new Date().toISOString()
+  };
+
+  await setJsonSetting(MEDIA_OVERRIDES_KEY, overrides);
+  return overrides;
+}
+
+export async function deleteMediaOverride(entityType, entityId) {
+  const normalizedType = normalizeMediaOverrideType(entityType);
+  const normalizedId = String(entityId || "").trim();
+  if (!normalizedType) {
+    throw new Error("Invalid media override type");
+  }
+  if (!normalizedId) {
+    throw new Error("Media override entity id is required");
+  }
+
+  const overrides = await getMediaOverrides();
+  delete overrides[normalizedType][normalizedId];
+  await setJsonSetting(MEDIA_OVERRIDES_KEY, overrides);
+  return overrides;
 }

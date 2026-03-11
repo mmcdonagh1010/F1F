@@ -3,6 +3,8 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { publicApiFetch } from "../lib/api";
+import { getCircuitVisual, getRaceVisualKey, resolveVisualOverride } from "../lib/f1Media";
+import { useF1MediaOverrides } from "../lib/f1MediaOverrides";
 
 function formatDate(value) {
   if (!value) return "TBC";
@@ -30,6 +32,7 @@ export default function LiveF1Panel({ compact = false, season }) {
   const [data, setData] = useState(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
+  const mediaOverrides = useF1MediaOverrides();
 
   useEffect(() => {
     let active = true;
@@ -73,6 +76,12 @@ export default function LiveF1Panel({ compact = false, season }) {
   const standingsLabel = data.standingsSeason && data.standingsSeason !== data.season ? `${data.standingsSeason} standings` : `${data.season} standings`;
   const latestResultLabel = data.latestResultSeason && data.latestResultSeason !== data.season ? `${data.latestResultSeason} latest completed race` : "Latest Result";
   const nextRaceSessions = getNextRaceSessions(data.nextRace);
+  const nextRaceVisual = data.nextRace
+    ? resolveVisualOverride(getCircuitVisual(data.nextRace), mediaOverrides.races?.[getRaceVisualKey(data.nextRace)])
+    : null;
+  const latestRaceVisual = data.latestRace
+    ? resolveVisualOverride(getCircuitVisual(data.latestRace), mediaOverrides.races?.[getRaceVisualKey(data.latestRace)])
+    : null;
 
   return (
     <section className="card overflow-hidden">
@@ -101,6 +110,7 @@ export default function LiveF1Panel({ compact = false, season }) {
           <p className="text-xs font-bold uppercase tracking-[0.25em] text-slate-400">Next Race</p>
           {data.nextRace ? (
             <>
+              {nextRaceVisual ? <img src={nextRaceVisual.src} alt={nextRaceVisual.alt} className="h-32 w-full rounded-2xl object-cover" /> : null}
               <p className="mt-2 text-2xl font-extrabold text-white">{data.nextRace.name}</p>
               <p className="mt-1 text-sm text-slate-300">Round {data.nextRace.round} at {data.nextRace.circuitName}</p>
               <p className="mt-1 text-sm text-slate-400">{data.nextRace.locality}, {data.nextRace.country}</p>
@@ -121,6 +131,7 @@ export default function LiveF1Panel({ compact = false, season }) {
           <p className="text-xs font-bold uppercase tracking-[0.25em] text-slate-400">{latestResultLabel}</p>
           {data.latestRace ? (
             <>
+              {latestRaceVisual ? <img src={latestRaceVisual.src} alt={latestRaceVisual.alt} className="h-32 w-full rounded-2xl object-cover" /> : null}
               <p className="mt-2 text-2xl font-extrabold text-white">{data.latestRace.name}</p>
               <p className="mt-1 text-sm text-slate-300">{data.latestRace.circuitName}</p>
               <div className="mt-3 space-y-2 text-sm text-slate-200">

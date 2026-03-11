@@ -9,10 +9,13 @@ import { deriveDeadlineAtFromCategories } from "../services/raceDeadline.js";
 import { config } from "../config.js";
 import { getJolpicaAutoSyncRuntimeStatus } from "../jobs/jolpicaAutoSync.js";
 import {
+  deleteMediaOverride,
   getJolpicaSyncStatus,
+  getMediaOverrides,
   getPickLockMinutesBeforeDeadline,
   normalizePickLockMinutes,
   setJolpicaSyncStatus,
+  upsertMediaOverride,
   setPickLockMinutesBeforeDeadline
 } from "../services/settings.js";
 
@@ -82,6 +85,10 @@ const PREDICTION_PRESETS = {
   }
 };
 
+const VALID_MEDIA_OVERRIDE_TYPES = new Set(["drivers", "teams", "races", "driver", "team", "race"]);
+const MEDIA_DATA_URL_PREFIX = /^data:image\/[a-zA-Z0-9.+-]+;base64,/;
+const MAX_MEDIA_DATA_URL_LENGTH = 2_500_000;
+
 function normalizePointOverride(raw, preset) {
   if (!raw || typeof raw !== "object") {
     return {
@@ -101,6 +108,22 @@ function normalizePointOverride(raw, preset) {
 
 function generateInviteCode() {
   return crypto.randomBytes(4).toString("hex").toUpperCase();
+}
+
+function normalizeMediaOverrideType(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (!VALID_MEDIA_OVERRIDE_TYPES.has(normalized)) return null;
+  if (normalized === "driver") return "drivers";
+  if (normalized === "team") return "teams";
+  if (normalized === "race") return "races";
+  return normalized;
+}
+
+function isValidMediaDataUrl(value) {
+  const normalized = String(value || "").trim();
+  if (!normalized) return false;
+  if (normalized.length > MAX_MEDIA_DATA_URL_LENGTH) return false;
+  return MEDIA_DATA_URL_PREFIX.test(normalized);
 }
 
 function normalizePositionSlots(positionSlots) {
@@ -464,6 +487,61 @@ router.put("/settings/pick-lock-minutes", async (req, res) => {
       value: updated.value,
       updatedAt: updated.updatedAt
     }
+  });
+});
+
+router.get("/settings/media-overrides", async (_req, res) => {
+  const overrides = await getMediaOverrides();
+  return res.json(overrides);
+});
+
+router.put("/settings/media-overrides", async (req, res) => {
+  const entityType = normalizeMediaOverrideType(req.body?.entityType);
+  const entityId = String(req.body?.entityId || "").trim();
+  const imageDataUrl = String(req.body?.imageDataUrl || "").trim();
+  const alt = String(req.body?.alt || "").trim();
+  const label = String(req.body?.label || "").trim();
+  const fileName = String(req.body?.fileName || "").trim();
+  const mimeType = String(req.body?.mimeType || "").trim();
+
+  if (!entityType) {
+    return res.status(400).json({ error: "Select a valid media type" });
+  }
+  if (!entityId) {
+    return res.status(400).json({ error: "Select an entity to override" });
+  }
+  if (!isValidMediaDataUrl(imageDataUrl)) {
+    return res.status(400).json({ error: "Upload a valid image under 2.5 MB" });
+  }
+
+  const overrides = await upsertMediaOverride({
+    entityType,
+    entityId,
+    imageUrl: imageDataUrl,
+    alt,
+    label,
+    fileName,
+    mimeType
+  });
+
+  return res.json({
+    message: "Media override saved",
+    overrides
+  });
+});
+
+router.delete("/settings/media-overrides/:entityType/:entityId", async (req, res) => {
+  const entityType = normalizeMediaOverrideType(req.params.entityType);
+  const entityId = String(req.params.entityId || "").trim();
+
+  if (!entityType || !entityId) {
+    return res.status(400).json({ error: "Valid media override target is required" });
+  }
+
+  const overrides = await deleteMediaOverride(entityType, entityId);
+  return res.json({
+    message: "Media override deleted",
+    overrides
   });
 });
 

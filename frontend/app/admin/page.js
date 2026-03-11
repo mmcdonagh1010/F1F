@@ -7,6 +7,8 @@ import Header from "../../components/Header";
 import BottomNav from "../../components/BottomNav";
 import { apiFetch } from "../../lib/api";
 import { getStoredUser } from "../../lib/auth";
+import { getRaceVisualKey } from "../../lib/f1Media";
+import { invalidateF1MediaOverridesCache } from "../../lib/f1MediaOverrides";
 
 const PREDICTION_OPTIONS = [
   { key: "raceQualificationPositions", label: "Race Qualification Positions", sprintOnly: false, defaultExactPoints: 5, defaultPartialPoints: 1 },
@@ -24,11 +26,27 @@ const ADMIN_TABS = [
   { key: "predictionOptions", label: "Prediction Options" },
   { key: "createRace", label: "Create Race" },
   { key: "drivers", label: "Drivers" },
+  { key: "media", label: "Media" },
   { key: "sync", label: "API Sync" },
   { key: "results", label: "Results" },
   { key: "settings", label: "Settings" },
   { key: "users", label: "Users" }
 ];
+
+const EMPTY_MEDIA_OVERRIDES = {
+  drivers: {},
+  teams: {},
+  races: {}
+};
+
+function fileToDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(new Error("Failed to read image file"));
+    reader.readAsDataURL(file);
+  });
+}
 
 const OPTION_CATEGORY_NAMES = {
   sprintResult: "Sprint Result Winner",
@@ -311,6 +329,16 @@ export default function AdminPage() {
 
   const [lockMinutesInput, setLockMinutesInput] = useState("");
   const [lockMessage, setLockMessage] = useState("");
+  const [mediaOverrides, setMediaOverrides] = useState(EMPTY_MEDIA_OVERRIDES);
+  const [mediaMessage, setMediaMessage] = useState("");
+  const [mediaType, setMediaType] = useState("races");
+  const [mediaSeason, setMediaSeason] = useState(String(currentYear));
+  const [mediaCatalog, setMediaCatalog] = useState(null);
+  const [mediaEntityId, setMediaEntityId] = useState("");
+  const [mediaAlt, setMediaAlt] = useState("");
+  const [mediaFileName, setMediaFileName] = useState("");
+  const [mediaMimeType, setMediaMimeType] = useState("");
+  const [mediaImageDataUrl, setMediaImageDataUrl] = useState("");
 
   const selectedLeague = useMemo(
     () => leagues.find((league) => league.id === selectedLeagueId) || null,
@@ -355,6 +383,40 @@ export default function AdminPage() {
       .sort((a, b) => new Date(a.race_date).getTime() - new Date(b.race_date).getTime());
   }, [allRaces, predictionYear]);
 
+  const mediaOptions = useMemo(() => {
+    if (mediaType === "drivers") {
+      return (mediaCatalog?.drivers || [])
+        .map((driver) => ({
+          id: String(driver.id || "").trim(),
+          label: String(driver.fullName || driver.name || "").trim()
+        }))
+        .filter((row) => row.id && row.label)
+        .sort((a, b) => a.label.localeCompare(b.label));
+    }
+
+    if (mediaType === "teams") {
+      return (mediaCatalog?.constructors || [])
+        .map((entry) => ({
+          id: String(entry.team?.id || "").trim(),
+          label: String(entry.team?.name || "").trim()
+        }))
+        .filter((row) => row.id && row.label)
+        .sort((a, b) => a.label.localeCompare(b.label));
+    }
+
+    return (mediaCatalog?.calendar || [])
+      .map((raceRow) => ({
+        id: getRaceVisualKey(raceRow),
+        label: `${raceRow.name} (${raceRow.season} round ${raceRow.round || "?"})`
+      }))
+      .filter((row) => row.id && row.label);
+  }, [mediaCatalog, mediaType]);
+
+  const mediaOverrideEntries = useMemo(() => {
+    const source = mediaOverrides?.[mediaType] || {};
+    return Object.values(source).sort((a, b) => String(a.label || a.entityId).localeCompare(String(b.label || b.entityId)));
+  }, [mediaOverrides, mediaType]);
+
   async function loadRaces() {
     try {
       const data = await apiFetch("/races");
@@ -393,6 +455,26 @@ export default function AdminPage() {
     } catch (err) {
       setSyncMessage(err.message);
       setSyncStatus(null);
+    }
+  }
+
+  async function loadMediaOverrides() {
+    try {
+      const data = await apiFetch("/admin/settings/media-overrides");
+      setMediaOverrides(data || EMPTY_MEDIA_OVERRIDES);
+    } catch (err) {
+      setMediaMessage(err.message || "Failed to load media overrides.");
+      setMediaOverrides(EMPTY_MEDIA_OVERRIDES);
+    }
+  }
+
+  async function loadMediaCatalog(season) {
+    try {
+      const data = await apiFetch(`/f1/live?season=${encodeURIComponent(season)}`);
+      setMediaCatalog(data);
+    } catch (err) {
+      setMediaCatalog(null);
+      setMediaMessage(err.message || "Failed to load media targets.");
     }
   }
 
@@ -514,7 +596,15 @@ export default function AdminPage() {
     loadLeagues();
     loadLockSetting();
     loadSyncStatus();
+    loadMediaOverrides();
+    loadMediaCatalog(currentYear);
   }, [isRoleResolved]);
+
+  useEffect(() => {
+    if (!isRoleResolved) return;
+    if (activeTab !== "media") return;
+    loadMediaCatalog(mediaSeason);
+  }, [activeTab, isRoleResolved, mediaSeason]);
 
   useEffect(() => {
     if (!isRoleResolved) return;
@@ -964,6 +1054,66 @@ export default function AdminPage() {
       setLockMessage(`Saved: ${data.setting.value} minutes before deadline.`);
     } catch (err) {
       setLockMessage(err.message);
+    }
+  }
+
+  async function handleMediaFileChange(file) {
+    if (!file) return;
+    try {
+      const dataUrl = await fileToDataUrl(file);
+      setMediaFileName(file.name || "");
+      setMediaMimeType(file.type || "");
+      setMediaImageDataUrl(dataUrl);
+      setMediaMessage("");
+    } catch (err) {
+      setMediaMessage(err.message || "Failed to read image file.");
+    }
+  }
+
+  async function saveMediaOverride(e) {
+    e.preventDefault();
+    setMediaMessage("");
+
+    if (!mediaEntityId) {
+      setMediaMessage("Select a target before uploading an image.");
+      return;
+    }
+    if (!mediaImageDataUrl) {
+      setMediaMessage("Choose an image file first.");
+      return;
+    }
+
+    try {
+      const response = await apiFetch("/admin/settings/media-overrides", {
+        method: "PUT",
+        body: JSON.stringify({
+          entityType: mediaType,
+          entityId: mediaEntityId,
+          imageDataUrl: mediaImageDataUrl,
+          alt: mediaAlt,
+          label: mediaOptions.find((item) => item.id === mediaEntityId)?.label || mediaEntityId,
+          fileName: mediaFileName,
+          mimeType: mediaMimeType
+        })
+      });
+      invalidateF1MediaOverridesCache();
+      setMediaOverrides(response.overrides || EMPTY_MEDIA_OVERRIDES);
+      setMediaMessage("Media override saved.");
+    } catch (err) {
+      setMediaMessage(err.message || "Failed to save media override.");
+    }
+  }
+
+  async function removeMediaOverride(entityType, entityId) {
+    try {
+      const response = await apiFetch(`/admin/settings/media-overrides/${entityType}/${encodeURIComponent(entityId)}`, {
+        method: "DELETE"
+      });
+      invalidateF1MediaOverridesCache();
+      setMediaOverrides(response.overrides || EMPTY_MEDIA_OVERRIDES);
+      setMediaMessage("Media override removed.");
+    } catch (err) {
+      setMediaMessage(err.message || "Failed to remove media override.");
     }
   }
 
@@ -1779,6 +1929,128 @@ raceId,driverName,teamName
 
           {driverMessage ? <p className="text-accent-gold">{driverMessage}</p> : null}
           {bulkMessage ? <p className="text-accent-gold">{bulkMessage}</p> : null}
+        </section>
+      ) : null}
+
+      {activeTab === "media" ? (
+        <section className="card space-y-4 p-4 text-sm text-slate-200">
+          <h2 className="font-display text-2xl text-accent-cyan">Media Overrides</h2>
+          <p>Upload custom images to replace the generated visuals shown for races, teams, and drivers across the live F1 views.</p>
+
+          <form onSubmit={saveMediaOverride} className="space-y-3 rounded-xl border border-white/20 bg-white/5 p-3">
+            <div className="grid gap-3 md:grid-cols-2">
+              <label className="block">
+                <span className="mb-1 block font-semibold text-slate-100">Type</span>
+                <select
+                  className="tap w-full rounded-xl border border-white/30 bg-white/10 px-3 py-2 text-white"
+                  value={mediaType}
+                  onChange={(e) => {
+                    setMediaType(e.target.value);
+                    setMediaEntityId("");
+                    setMediaMessage("");
+                  }}
+                >
+                  <option value="races" className="bg-track-900 text-white">Races</option>
+                  <option value="teams" className="bg-track-900 text-white">Teams</option>
+                  <option value="drivers" className="bg-track-900 text-white">Drivers</option>
+                </select>
+              </label>
+
+              <label className="block">
+                <span className="mb-1 block font-semibold text-slate-100">Season Catalog</span>
+                <select
+                  className="tap w-full rounded-xl border border-white/30 bg-white/10 px-3 py-2 text-white"
+                  value={mediaSeason}
+                  onChange={(e) => {
+                    setMediaSeason(e.target.value);
+                    setMediaEntityId("");
+                  }}
+                >
+                  {[currentYear, currentYear - 1, currentYear - 2].map((year) => (
+                    <option key={`media-season-${year}`} value={String(year)} className="bg-track-900 text-white">
+                      {year}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <label className="block">
+                <span className="mb-1 block font-semibold text-slate-100">Target</span>
+                <select
+                  className="tap w-full rounded-xl border border-white/30 bg-white/10 px-3 py-2 text-white"
+                  value={mediaEntityId}
+                  onChange={(e) => setMediaEntityId(e.target.value)}
+                >
+                  <option value="" className="bg-track-900 text-slate-300">Select target</option>
+                  {mediaOptions.map((option) => (
+                    <option key={option.id} value={option.id} className="bg-track-900 text-white">
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+
+            {mediaCatalog?.snapshotMode === "persisted" ? (
+              <p className="text-xs text-accent-gold">Using the saved live snapshot for this season because Jolpica is unavailable.</p>
+            ) : null}
+
+            <label className="block">
+              <span className="mb-1 block font-semibold text-slate-100">Alt Text</span>
+              <input
+                className="tap w-full rounded-xl border border-white/30 bg-white/10 px-3 py-2 text-white"
+                placeholder="Optional accessible description"
+                value={mediaAlt}
+                onChange={(e) => setMediaAlt(e.target.value)}
+              />
+            </label>
+
+            <label className="block">
+              <span className="mb-1 block font-semibold text-slate-100">Image File</span>
+              <input
+                type="file"
+                accept="image/png,image/jpeg,image/webp,image/svg+xml"
+                onChange={(e) => handleMediaFileChange(e.target.files?.[0])}
+              />
+            </label>
+
+            {mediaImageDataUrl ? (
+              <img src={mediaImageDataUrl} alt={mediaAlt || "Selected media preview"} className="h-40 w-full rounded-2xl object-cover" />
+            ) : null}
+
+            <button type="submit" className="tap rounded-xl bg-accent-cyan px-4 py-2 font-bold text-track-900">
+              Save Media Override
+            </button>
+          </form>
+
+          <div className="rounded-xl border border-white/20 bg-white/5 p-3">
+            <p className="font-semibold text-slate-100">Saved Overrides</p>
+            <div className="mt-3 space-y-3">
+              {mediaOverrideEntries.length === 0 ? (
+                <p className="text-slate-400">No saved overrides for this type.</p>
+              ) : mediaOverrideEntries.map((entry) => (
+                <div key={`${mediaType}-${entry.entityId}`} className="rounded-xl border border-white/10 p-3">
+                  <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                    <div>
+                      <p className="font-semibold text-white">{entry.label || entry.entityId}</p>
+                      <p className="text-xs text-slate-400">ID: {entry.entityId}</p>
+                      <p className="text-xs text-slate-500">Updated {entry.updatedAt ? new Date(entry.updatedAt).toLocaleString() : "unknown"}</p>
+                    </div>
+                    <button
+                      type="button"
+                      className="tap rounded-xl border border-red-400/60 px-3 py-2 text-xs font-semibold text-red-200"
+                      onClick={() => removeMediaOverride(mediaType, entry.entityId)}
+                    >
+                      Delete
+                    </button>
+                  </div>
+                  <img src={entry.imageUrl} alt={entry.alt || entry.label || entry.entityId} className="mt-3 h-32 w-full rounded-2xl object-cover" />
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {mediaMessage ? <p className="text-accent-gold">{mediaMessage}</p> : null}
         </section>
       ) : null}
 

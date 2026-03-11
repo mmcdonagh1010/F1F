@@ -3,8 +3,8 @@ import SessionManager from "../components/SessionManager";
 import ServiceWorkerReset from "../components/ServiceWorkerReset";
 
 export const metadata = {
-  title: "Fantasy F1 League",
-  description: "Private Formula 1 picks league",
+  title: "turn1carnage",
+  description: "turn1carnage Formula 1 picks league",
   manifest: "/manifest.json"
 };
 

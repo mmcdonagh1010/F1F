@@ -6,6 +6,8 @@ import { useParams, useSearchParams } from "next/navigation";
 import Header from "../../../../components/Header";
 import BottomNav from "../../../../components/BottomNav";
 import { publicApiFetch } from "../../../../lib/api";
+import { getDriverVisual, resolveVisualOverride } from "../../../../lib/f1Media";
+import { useF1MediaOverrides } from "../../../../lib/f1MediaOverrides";
 
 function formatDate(value) {
   if (!value) return "TBC";
@@ -22,6 +24,13 @@ function LiveDriverDetailPageContent() {
   const season = searchParams.get("season") || String(new Date().getUTCFullYear());
   const [detail, setDetail] = useState(null);
   const [error, setError] = useState("");
+  const mediaOverrides = useF1MediaOverrides();
+  const driverVisual = detail
+    ? resolveVisualOverride(
+        getDriverVisual(detail.driver, detail.standing?.team || detail.results?.[0]?.team),
+        mediaOverrides.drivers?.[detail.driver.id]
+      )
+    : null;
 
   useEffect(() => {
     let active = true;
@@ -62,6 +71,11 @@ function LiveDriverDetailPageContent() {
           ) : null}
           <section className="card p-4">
             <p className="text-xs font-bold uppercase tracking-[0.25em] text-accent-cyan">Driver</p>
+            <img
+              src={driverVisual.src}
+              alt={driverVisual.alt}
+              className="mt-3 h-44 w-full rounded-2xl object-cover"
+            />
             <h2 className="mt-2 font-display text-4xl text-white">{detail.driver.fullName}</h2>
             <p className="mt-1 text-sm text-slate-300">{detail.driver.nationality || "Unknown nationality"}</p>
             {detail.resultSeason && String(detail.resultSeason) !== String(season) ? (

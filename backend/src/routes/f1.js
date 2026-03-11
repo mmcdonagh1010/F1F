@@ -1,5 +1,6 @@
 import express from "express";
 import { getLiveDriverDetail, getLiveF1Snapshot, getLiveTeamDetail } from "../services/f1Live.js";
+import { getMediaOverrides } from "../services/settings.js";
 
 const router = express.Router();
 
@@ -7,6 +8,15 @@ router.get("/live", async (req, res, next) => {
   try {
     const data = await getLiveF1Snapshot(req.query.season);
     return res.json(data);
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.get("/media-overrides", async (_req, res, next) => {
+  try {
+    const overrides = await getMediaOverrides();
+    return res.json(overrides);
   } catch (error) {
     return next(error);
   }

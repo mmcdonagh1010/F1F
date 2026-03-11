@@ -14,46 +14,18 @@ function toIso(datePart, timePart = "00:00:00Z") {
   return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
 }
 
-function parsePositionCategoryScope(categoryName) {
-  const normalized = String(categoryName || "").toLowerCase();
-  if (/^race qualification p\d+$/i.test(categoryName || "")) return "qualifying";
-  if (/^sprint qualification p\d+$/i.test(categoryName || "")) return "sprint";
-  if (/^sprint result p\d+$/i.test(categoryName || "")) return "sprint";
-  if (/^race result p\d+$/i.test(categoryName || "")) return "race";
-  if (normalized.includes("sprint qualification")) return "sprint";
-  if (normalized.includes("sprint result winner")) return "sprint";
-  if (normalized.includes("qualification")) return "qualifying";
-  return null;
-}
-
-function collectEnabledSessions(categories) {
-  const sessions = new Set();
-
-  (categories || []).forEach((category) => {
-    const scope = parsePositionCategoryScope(category?.name);
-    if (scope) {
-      sessions.add(scope);
-      return;
-    }
-
-    sessions.add("race");
-  });
-
-  return sessions;
-}
-
-function buildScheduleCandidates(schedule, enabledSessions) {
+function buildScheduleCandidates(schedule) {
   const candidates = [];
 
-  if (enabledSessions.has("qualifying") && schedule.qualifyingDateIso) {
+  if (schedule.sprintQualifyingDateIso) {
+    candidates.push(schedule.sprintQualifyingDateIso);
+  }
+
+  if (schedule.qualifyingDateIso) {
     candidates.push(schedule.qualifyingDateIso);
   }
 
-  if (enabledSessions.has("sprint") && schedule.sprintDateIso) {
-    candidates.push(schedule.sprintDateIso);
-  }
-
-  if (enabledSessions.has("race") && schedule.raceDateIso) {
+  if (schedule.raceDateIso) {
     candidates.push(schedule.raceDateIso);
   }
 
@@ -78,14 +50,14 @@ export async function fetchRaceSchedule({ season, round }) {
   return {
     raceDateIso: toIso(race?.date, race?.time || "00:00:00Z"),
     qualifyingDateIso: toIso(race?.Qualifying?.date, race?.Qualifying?.time || "00:00:00Z"),
-    sprintDateIso: toIso(race?.Sprint?.date, race?.Sprint?.time || "00:00:00Z")
+    sprintDateIso: toIso(race?.Sprint?.date, race?.Sprint?.time || "00:00:00Z"),
+    sprintQualifyingDateIso: toIso(race?.SprintQualifying?.date, race?.SprintQualifying?.time || "00:00:00Z")
   };
 }
 
 export async function deriveDeadlineAtFromCategories({ race, categories }) {
   const fallbackDeadlineAt = getFallbackDeadlineAt(race);
-  const enabledSessions = collectEnabledSessions(categories);
-  if (enabledSessions.size === 0) {
+  if (!race) {
     return fallbackDeadlineAt;
   }
 
@@ -101,7 +73,7 @@ export async function deriveDeadlineAtFromCategories({ race, categories }) {
     const schedule = await fetchRaceSchedule({ season, round });
     if (!schedule) return fallbackDeadlineAt;
 
-    const candidates = buildScheduleCandidates(schedule, enabledSessions);
+    const candidates = buildScheduleCandidates(schedule);
     return candidates[0] || fallbackDeadlineAt;
   } catch {
     return fallbackDeadlineAt;
