@@ -13,10 +13,11 @@ export default function Header({ title, subtitle }) {
 
   return (
     <header className="mb-5">
-      <div className="flex items-center gap-3">
-        <img src="/logo-mark-192.png" alt="TURN 1 CARNAGE logo" className="h-12 w-12 rounded-xl object-cover shadow-lg shadow-black/30" />
-        <p className="font-display text-2xl tracking-wide text-accent-cyan">TURN 1 CARNAGE</p>
-      </div>
+      <img
+        src="/banner.png"
+        alt="TURN 1 CARNAGE banner"
+        className="mb-4 h-72 w-full rounded-2xl object-cover object-[center_22%] shadow-lg shadow-black/30 md:h-96"
+      />
       <h1 className="text-3xl font-extrabold leading-tight">{title}</h1>
       {subtitle ? <p className="mt-1 text-sm text-slate-300">{subtitle}</p> : null}
       {userName ? <p className="mt-2 text-xs font-semibold uppercase tracking-wide text-slate-400">Logged in as {userName}</p> : null}
