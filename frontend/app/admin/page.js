@@ -994,7 +994,7 @@ export default function AdminPage() {
         body: JSON.stringify({ season: Number(syncSeason) })
       });
       setSyncMessage(
-        `Completed-result sync done: updated ${res.updatedRaces} race(s), applied ${res.updatedResults} result entries, skipped ${res.skipped?.length || 0}.`
+        `Weekend-result sync done: updated ${res.updatedRaces} race(s), applied ${res.updatedResults} result entries, skipped ${res.skipped?.length || 0}.`
       );
       await loadSyncStatus();
     } catch (err) {
@@ -2111,7 +2111,7 @@ raceId,driverName,teamName
               Sync Latest Results
             </button>
             <button type="button" className="tap rounded-xl border border-white/30 px-4 py-2 font-bold text-slate-100" onClick={syncCompletedResults}>
-              Sync Completed Results
+              Sync Weekend Results
             </button>
             <button type="button" className="tap rounded-xl border border-white/30 px-4 py-2 font-bold text-slate-100" onClick={loadSyncStatus}>
               Refresh Status

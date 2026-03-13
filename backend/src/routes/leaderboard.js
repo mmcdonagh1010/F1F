@@ -176,7 +176,23 @@ router.get("/latest", authRequired, async (req, res) => {
   }
   const leagueObjectId = toObjectIdIfValid(leagueId);
 
-  const latestRace = await Race.findOne({ leagues: leagueId, race_date: { $gte: new Date(`${year}-01-01`), $lte: new Date(`${year}-12-31`) } }).where('_id').ne(null).sort({ race_date: -1 }).lean().exec();
+  const candidateRaces = await Race.find({
+    leagues: leagueId,
+    race_date: { $gte: new Date(`${year}-01-01`), $lte: new Date(`${year}-12-31`) }
+  })
+    .sort({ race_date: -1 })
+    .lean()
+    .exec();
+
+  if (candidateRaces.length === 0) {
+    return res.json({ year, leagueId, availableLeagues: userLeagues, latestRace: null, categories: [], rows: [] });
+  }
+
+  const candidateRaceIds = candidateRaces.map((race) => race._id);
+  const racesWithResults = await Result.distinct("race", { race: { $in: candidateRaceIds } }).exec();
+  const resultRaceIdSet = new Set(racesWithResults.map((raceId) => String(raceId)));
+  const latestRace = candidateRaces.find((race) => resultRaceIdSet.has(String(race._id))) || null;
+
   if (!latestRace) return res.json({ year, leagueId, availableLeagues: userLeagues, latestRace: null, categories: [], rows: [] });
 
   const categories = await PickCategory.find({ race: latestRace._id }).sort({ display_order: 1 }).lean().exec();

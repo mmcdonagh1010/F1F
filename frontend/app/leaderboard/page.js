@@ -7,6 +7,8 @@ import Header from "../../components/Header";
 import BottomNav from "../../components/BottomNav";
 import { apiFetch } from "../../lib/api";
 
+const AUTO_REFRESH_MS = 15 * 60 * 1000;
+
 function LeaderboardPageContent() {
   const router = useRouter();
   const pathname = usePathname();
@@ -93,6 +95,15 @@ function LeaderboardPageContent() {
 
   useEffect(() => {
     loadBoard(year, leagueId);
+  }, [year, leagueId]);
+
+  useEffect(() => {
+    const intervalId = window.setInterval(() => {
+      if (document.visibilityState !== "visible") return;
+      loadBoard(year, leagueId);
+    }, AUTO_REFRESH_MS);
+
+    return () => window.clearInterval(intervalId);
   }, [year, leagueId]);
 
   useEffect(() => {
@@ -279,10 +290,10 @@ function LeaderboardPageContent() {
         <section className="card overflow-x-auto p-2">
           {latestRace ? (
             <p className="px-2 pb-2 text-xs text-slate-400">
-              Latest race in {year}: <span className="text-accent-cyan">{latestRace.name}</span>
+              Latest synced weekend in {year}: <span className="text-accent-cyan">{latestRace.name}</span>. Refreshes every 15 minutes.
             </p>
           ) : (
-            <p className="px-2 pb-2 text-xs text-slate-400">No completed race results available for {year}.</p>
+            <p className="px-2 pb-2 text-xs text-slate-400">No synced race weekend results available for {year}.</p>
           )}
           {latestRace ? (
             <table className="min-w-[760px] text-sm text-slate-100">

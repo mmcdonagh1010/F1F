@@ -868,7 +868,7 @@ router.post("/sync/jolpica/completed-results", async (req, res) => {
 
     await setJolpicaSyncStatus({
       isRunning: true,
-      lastMode: "manual-completed-results",
+      lastMode: "manual-weekend-results",
       lastRunStartedAt: startedAt,
       lastErrorMessage: ""
     });
@@ -876,25 +876,25 @@ router.post("/sync/jolpica/completed-results", async (req, res) => {
     const summary = await syncCompletedRaceResultsFromJolpica({ season: chosenSeason });
     await setJolpicaSyncStatus({
       isRunning: false,
-      lastMode: "manual-completed-results",
+      lastMode: "manual-weekend-results",
       lastRunStartedAt: startedAt,
       lastRunFinishedAt: new Date().toISOString(),
       lastSuccessAt: new Date().toISOString(),
-      summary: { season: chosenSeason, type: "completed-results", ...summary }
+      summary: { season: chosenSeason, type: "weekend-results", ...summary }
     });
-    return res.json({ message: "Completed race result sync finished", ...summary });
+    return res.json({ message: "Race weekend result sync finished", ...summary });
   } catch (error) {
-    console.error("Completed result sync failed", error);
+    console.error("Weekend result sync failed", error);
     await setJolpicaSyncStatus({
       isRunning: false,
-      lastMode: "manual-completed-results",
+      lastMode: "manual-weekend-results",
       lastRunStartedAt: startedAt,
       lastRunFinishedAt: new Date().toISOString(),
       lastErrorAt: new Date().toISOString(),
       lastErrorMessage: error.message,
       summary: null
     });
-    return res.status(502).json({ error: "Failed to sync completed race results from Jolpica API" });
+    return res.status(502).json({ error: "Failed to sync race weekend results from Jolpica API" });
   }
 });
 

@@ -1,4 +1,3 @@
-use("f1f");
 
 const userCount = db.getCollection("users").countDocuments({});
 print(`users.countDocuments(): ${userCount}`);

@@ -417,6 +417,14 @@ async function getRoundWeekendData(season, round, includeSprint) {
   };
 }
 
+function hasPublishedWeekendResults(weekendData) {
+  return Boolean(
+    weekendData?.qualifyingResults?.length ||
+      weekendData?.sprintResults?.length ||
+      weekendData?.raceResults?.length
+  );
+}
+
 async function syncLocalRaceResultsFromWeekendData(raceDoc, weekendData) {
   const categories = await PickCategory.find({ race: raceDoc._id }).lean().exec();
   if (categories.length === 0) {
@@ -448,14 +456,18 @@ async function syncLocalRaceResultsFromWeekendData(raceDoc, weekendData) {
     ).exec();
   }
 
-  await Race.updateOne({ _id: raceDoc._id }, { $set: { status: "completed" } }).exec();
+  if (weekendData?.raceResults?.length) {
+    await Race.updateOne({ _id: raceDoc._id }, { $set: { status: "completed" } }).exec();
+  }
+
   await calculateRaceScores(raceDoc._id);
 
   return {
     updated: true,
     raceId: String(raceDoc._id),
     raceName: raceDoc.name,
-    mappedCount: officialResults.length
+    mappedCount: officialResults.length,
+    hasRaceResults: Boolean(weekendData?.raceResults?.length)
   };
 }
 
@@ -598,7 +610,6 @@ export async function syncCompletedRaceResultsFromJolpica({ season }) {
     .lean()
     .exec();
 
-  const now = Date.now();
   const cache = new Map();
   let checkedRaces = 0;
   let updatedRaces = 0;
@@ -606,11 +617,6 @@ export async function syncCompletedRaceResultsFromJolpica({ season }) {
   const skipped = [];
 
   for (const raceDoc of localRaces) {
-    if (!raceDoc.race_date || new Date(raceDoc.race_date).getTime() > now) {
-      skipped.push({ raceId: String(raceDoc._id), raceName: raceDoc.name, reason: "Race weekend is not complete yet" });
-      continue;
-    }
-
     const round = Number(raceDoc.external_round);
     if (!Number.isInteger(round) || round < 1) {
       skipped.push({ raceId: String(raceDoc._id), raceName: raceDoc.name, reason: "Race has no valid external round" });
@@ -626,8 +632,8 @@ export async function syncCompletedRaceResultsFromJolpica({ season }) {
     }
 
     const weekendData = cache.get(cacheKey);
-    if (!weekendData?.raceResults?.length) {
-      skipped.push({ raceId: String(raceDoc._id), raceName: raceDoc.name, reason: "No completed Jolpica race results found" });
+    if (!hasPublishedWeekendResults(weekendData)) {
+      skipped.push({ raceId: String(raceDoc._id), raceName: raceDoc.name, reason: "No published Jolpica weekend results found" });
       continue;
     }
 

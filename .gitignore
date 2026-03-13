@@ -19,3 +19,4 @@ dist/
 build/
 .next/
 **/.next/
+local-f1f.mongodb.js
