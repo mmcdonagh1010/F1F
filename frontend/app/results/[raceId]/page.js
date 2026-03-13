@@ -11,7 +11,9 @@ export default function RaceResultsPage() {
 
   useEffect(() => {
     apiFetch(`/leaderboard/race/${raceId}`)
-      .then(setRows)
+      .then((data) => {
+        setRows(Array.isArray(data) ? data : Array.isArray(data?.rows) ? data.rows : []);
+      })
       .catch(() => setRows([]));
   }, [raceId]);
 
