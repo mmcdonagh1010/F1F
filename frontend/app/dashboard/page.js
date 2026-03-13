@@ -71,6 +71,17 @@ export default function DashboardPage() {
 
   const displayedRaces = showAllUpcoming ? scheduledRaces : nearestRaceCandidates.slice(0, 1);
 
+  function getLeaderboardResultsHref(race) {
+    const raceTime = new Date(race.race_date || race.deadline_at);
+    const year = Number.isNaN(raceTime.getTime()) ? new Date().getUTCFullYear() : raceTime.getUTCFullYear();
+    const params = new URLSearchParams({
+      boardMode: "latestRace",
+      raceId: race.id,
+      year: String(year)
+    });
+    return `/leaderboard?${params.toString()}`;
+  }
+
   return (
     <div className="space-y-4 pb-24">
       <Header title="Upcoming Races" subtitle="Submit your picks before lock" />
@@ -125,7 +136,7 @@ export default function DashboardPage() {
           </p>
           {race.has_results ? (
             <Link
-              href={`/results/${race.id}`}
+              href={getLeaderboardResultsHref(race)}
               className="tap mt-3 block rounded-xl bg-accent-cyan px-3 py-2 text-center font-bold text-track-900"
             >
               View Results
