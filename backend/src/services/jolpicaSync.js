@@ -6,7 +6,8 @@ import League from "../models/League.js";
 import Pick from "../models/Pick.js";
 import Score from "../models/Score.js";
 import { calculateRaceScores } from "./scoring.js";
-import { fetchRaceSchedule } from "./raceDeadline.js";
+import { fetchRaceSchedule, getLockDeadlineAt } from "./raceDeadline.js";
+import { getPickLockMinutesBeforeDeadline } from "./settings.js";
 
 const JOLPICA_BASE = "https://api.jolpi.ca/ergast/f1";
 
@@ -29,12 +30,13 @@ async function parseDeadlineAt(raceDateIso, race) {
   const round = Number(race?.round || 0);
   const raceDate = new Date(raceDateIso);
   const season = Number.isNaN(raceDate.getTime()) ? null : raceDate.getUTCFullYear();
+  const lockMinutes = await getPickLockMinutesBeforeDeadline();
 
   if (season && Number.isInteger(round) && round > 0) {
     try {
       const schedule = await fetchRaceSchedule({ season, round });
-      if (schedule?.sprintQualifyingDateIso) return schedule.sprintQualifyingDateIso;
-      if (schedule?.qualifyingDateIso) return schedule.qualifyingDateIso;
+      if (schedule?.sprintQualifyingDateIso) return getLockDeadlineAt(schedule.sprintQualifyingDateIso, lockMinutes);
+      if (schedule?.qualifyingDateIso) return getLockDeadlineAt(schedule.qualifyingDateIso, lockMinutes);
     } catch {
       // Fall back to the schedule embedded in the sync payload.
     }
@@ -42,13 +44,13 @@ async function parseDeadlineAt(raceDateIso, race) {
 
   const sprintQualifyingDate = race?.SprintQualifying?.date;
   const sprintQualifyingTime = race?.SprintQualifying?.time || "00:00:00Z";
-  if (sprintQualifyingDate) return new Date(`${sprintQualifyingDate}T${sprintQualifyingTime}`).toISOString();
+  if (sprintQualifyingDate) return getLockDeadlineAt(new Date(`${sprintQualifyingDate}T${sprintQualifyingTime}`).toISOString(), lockMinutes);
 
   const qualifyingDate = race?.Qualifying?.date;
   const qualifyingTime = race?.Qualifying?.time || "00:00:00Z";
-  if (qualifyingDate) return new Date(`${qualifyingDate}T${qualifyingTime}`).toISOString();
+  if (qualifyingDate) return getLockDeadlineAt(new Date(`${qualifyingDate}T${qualifyingTime}`).toISOString(), lockMinutes);
 
-  return raceDateIso;
+  return getLockDeadlineAt(raceDateIso, lockMinutes) || raceDateIso;
 }
 
 function extractRaces(payload) {

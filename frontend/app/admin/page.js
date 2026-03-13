@@ -1051,7 +1051,7 @@ export default function AdminPage() {
         body: JSON.stringify({ value: parsed })
       });
       setLockMinutesInput(String(data.setting.value));
-      setLockMessage(`Saved: ${data.setting.value} minutes before deadline.`);
+      setLockMessage(`Saved: ${data.setting.value} minutes before first qualifying.`);
     } catch (err) {
       setLockMessage(err.message);
     }
@@ -2153,7 +2153,7 @@ raceId,tieBreakerValue,categoryName,valueText,valueNumber
         <section className="card space-y-3 p-4 text-sm text-slate-200">
           <h2 className="font-display text-2xl text-accent-cyan">Settings</h2>
           <form onSubmit={savePickLockMinutes} className="space-y-3 rounded-xl border border-white/20 bg-white/5 p-3">
-            <p className="font-semibold text-slate-100">Pick Lock Window (minutes before deadline)</p>
+            <p className="font-semibold text-slate-100">Pick Deadline Offset (minutes before first qualifying)</p>
             <input
               type="number"
               min="0"
@@ -2164,8 +2164,9 @@ raceId,tieBreakerValue,categoryName,valueText,valueNumber
               onChange={(e) => setLockMinutesInput(e.target.value)}
               required
             />
+            <p className="text-xs text-slate-400">Races lock at the stored deadline. This setting controls how many minutes before the first qualifying session that deadline is generated.</p>
             <button type="submit" className="tap rounded-xl bg-accent-cyan px-4 py-2 font-bold text-track-900">
-              Save Lock Window
+              Save Deadline Offset
             </button>
             {lockMessage ? <p className="text-accent-gold">{lockMessage}</p> : null}
           </form>

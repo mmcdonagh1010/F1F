@@ -481,7 +481,7 @@ router.put("/settings/pick-lock-minutes", async (req, res) => {
 
   const updated = await setPickLockMinutesBeforeDeadline(normalized);
   return res.json({
-    message: "Pick lock window updated",
+    message: "Pick deadline offset updated",
     setting: {
       key: "PICK_LOCK_MINUTES_BEFORE_DEADLINE",
       value: updated.value,

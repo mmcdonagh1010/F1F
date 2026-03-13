@@ -62,6 +62,13 @@ function isDriverOfWeekendCategory(category) {
   return String(category?.name || "").toLowerCase().includes("driver of the weekend");
 }
 
+function formatEntryValue(entry) {
+  if (!entry) return null;
+  if (entry.value_text !== null && entry.value_text !== undefined && entry.value_text !== "") return entry.value_text;
+  if (entry.value_number !== null && entry.value_number !== undefined) return String(entry.value_number);
+  return null;
+}
+
 function calculatePickPoints(category, pick, result, actualPositionByScopeAndDriver) {
   if (!pick || !result) return 0;
 
@@ -175,6 +182,7 @@ router.get("/latest", authRequired, async (req, res) => {
     return res.status(403).json({ error: "You are not a member of the selected league" });
   }
   const leagueObjectId = toObjectIdIfValid(leagueId);
+  const requestedRaceId = String(req.query.raceId || "").trim() || null;
 
   const candidateRaces = await Race.find({
     leagues: leagueId,
@@ -191,7 +199,19 @@ router.get("/latest", authRequired, async (req, res) => {
   const candidateRaceIds = candidateRaces.map((race) => race._id);
   const racesWithResults = await Result.distinct("race", { race: { $in: candidateRaceIds } }).exec();
   const resultRaceIdSet = new Set(racesWithResults.map((raceId) => String(raceId)));
-  const latestRace = candidateRaces.find((race) => resultRaceIdSet.has(String(race._id))) || null;
+
+  const now = Date.now();
+  const requestedRace = requestedRaceId
+    ? candidateRaces.find((race) => String(race._id) === requestedRaceId) || null
+    : null;
+  const ongoingRace = candidateRaces.find((race) => {
+    const deadlineAt = new Date(race.deadline_at || race.race_date).getTime();
+    const raceAt = new Date(race.race_date).getTime();
+    const weekendEnd = raceAt + 36 * 60 * 60 * 1000;
+    return Number.isFinite(deadlineAt) && Number.isFinite(raceAt) && deadlineAt <= now && now <= weekendEnd;
+  }) || null;
+  const latestRaceWithResults = candidateRaces.find((race) => resultRaceIdSet.has(String(race._id))) || null;
+  const latestRace = requestedRace || ongoingRace || latestRaceWithResults || candidateRaces[0] || null;
 
   if (!latestRace) return res.json({ year, leagueId, availableLeagues: userLeagues, latestRace: null, categories: [], rows: [] });
 
@@ -225,17 +245,31 @@ router.get("/latest", authRequired, async (req, res) => {
   const rows = members.map((m) => {
     let raceTotal = 0;
     const categoryPoints = {};
+    const categoryPicks = {};
     for (const category of categories) {
       const pick = pickMap.get(`${String(m.user._id)}:${String(category._id)}`);
       const result = resultMap.get(String(category._id));
       const points = calculatePickPoints(category, pick, result, actualPositionByScopeAndDriver);
       categoryPoints[String(category._id)] = points;
+      categoryPicks[String(category._id)] = formatEntryValue(pick);
       raceTotal += points;
     }
-    return { id: String(m.user._id), name: m.user.name, raceTotal, overallPoints: overallByUser.get(String(m.user._id)) || 0, categoryPoints };
+    return { id: String(m.user._id), name: m.user.name, raceTotal, overallPoints: overallByUser.get(String(m.user._id)) || 0, categoryPoints, categoryPicks };
   }).sort((a,b) => b.raceTotal - a.raceTotal || b.overallPoints - a.overallPoints || a.name.localeCompare(b.name));
 
-  return res.json({ year, leagueId, availableLeagues: userLeagues, latestRace: { id: String(latestRace._id), name: latestRace.name, race_date: latestRace.race_date }, categories, rows });
+  return res.json({
+    year,
+    leagueId,
+    availableLeagues: userLeagues,
+    latestRace: { id: String(latestRace._id), name: latestRace.name, race_date: latestRace.race_date },
+    categories: categories.map((category) => ({
+      id: String(category._id),
+      name: category.name,
+      display_order: category.display_order,
+      officialValue: formatEntryValue(resultMap.get(String(category._id)))
+    })),
+    rows
+  });
 });
 
 router.get("/season/player/:userId", authRequired, async (req, res) => {

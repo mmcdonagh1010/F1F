@@ -69,7 +69,7 @@ The Admin Dashboard now supports:
 - Manual race weekend creation if API is unavailable
 - Driver management per race (add/remove/edit `name` + `team`)
 - Bulk JSON upload for races, drivers, and results
-- Pick lock window setting (`PICK_LOCK_MINUTES_BEFORE_DEADLINE`) from UI
+- Pick deadline offset setting (`PICK_LOCK_MINUTES_BEFORE_DEADLINE`) from UI
 - Prediction categories with custom position slots (example: `P1,P2,P3,P9,P10,P11`)
 
 ### Bulk Upload JSON Examples

@@ -1,6 +1,5 @@
 import express from "express";
 import { authRequired } from "../middleware/auth.js";
-import { getPickLockMinutesBeforeDeadline } from "../services/settings.js";
 import Race from "../models/Race.js";
 import PickCategory from "../models/PickCategory.js";
 import RaceDriver from "../models/RaceDriver.js";
@@ -10,11 +9,6 @@ import Result from "../models/Result.js";
 import mongoose from "mongoose";
 
 const router = express.Router();
-
-function getLockAt(deadlineAt, lockMinutes) {
-  const lockMs = lockMinutes * 60 * 1000;
-  return new Date(new Date(deadlineAt).getTime() - lockMs).toISOString();
-}
 
 function serializeCategory(category) {
   return {
@@ -35,7 +29,6 @@ function arePredictionsLive(race) {
 }
 
 router.get("/", authRequired, async (req, res) => {
-  const lockMinutes = await getPickLockMinutesBeforeDeadline();
   const role = req.user.role || "player";
   let racesDocs = [];
   if (role === 'admin') {
@@ -70,7 +63,7 @@ router.get("/", authRequired, async (req, res) => {
   const resultsByRaceId = new Map(resultCounts.map((row) => [String(row._id), row.count > 0]));
 
   const withLockInfo = racesDocs.map((race) => {
-    const lockAt = getLockAt(race.deadline_at, lockMinutes);
+    const lockAt = race.deadline_at;
     return {
       id: String(race._id),
       league_id: race.league || null,
@@ -93,7 +86,6 @@ router.get("/", authRequired, async (req, res) => {
 
 router.get("/:raceId", authRequired, async (req, res) => {
   const { raceId } = req.params;
-  const lockMinutes = await getPickLockMinutesBeforeDeadline();
   const role = req.user.role || "player";
 
   // Load race
@@ -117,7 +109,7 @@ router.get("/:raceId", authRequired, async (req, res) => {
     if (categories.length === 0) return res.status(404).json({ error: 'Race not found' });
   }
 
-  const lockAt = getLockAt(raceDoc.deadline_at, lockMinutes);
+  const lockAt = raceDoc.deadline_at;
 
   return res.json({
     id: String(raceDoc._id),

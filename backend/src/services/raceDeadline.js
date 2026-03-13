@@ -1,5 +1,7 @@
 const JOLPICA_BASE = "https://api.jolpi.ca/ergast/f1";
 
+import { getPickLockMinutesBeforeDeadline } from "./settings.js";
+
 async function fetchJson(url) {
   const res = await fetch(url);
   if (!res.ok) {
@@ -30,6 +32,15 @@ function buildScheduleCandidates(schedule) {
   }
 
   return candidates.sort((left, right) => new Date(left).getTime() - new Date(right).getTime());
+}
+
+export function getLockDeadlineAt(sessionAt, lockMinutes) {
+  const sessionTime = new Date(sessionAt).getTime();
+  if (!Number.isFinite(sessionTime)) return null;
+
+  const minutes = Number.isInteger(lockMinutes) ? lockMinutes : Number(lockMinutes || 0);
+  const offsetMinutes = Number.isFinite(minutes) ? minutes : 0;
+  return new Date(sessionTime - offsetMinutes * 60 * 1000).toISOString();
 }
 
 export function getFallbackDeadlineAt(race) {
@@ -74,7 +85,11 @@ export async function deriveDeadlineAtFromCategories({ race, categories }) {
     if (!schedule) return fallbackDeadlineAt;
 
     const candidates = buildScheduleCandidates(schedule);
-    return candidates[0] || fallbackDeadlineAt;
+    const firstSessionAt = candidates[0];
+    if (!firstSessionAt) return fallbackDeadlineAt;
+
+    const lockMinutes = await getPickLockMinutesBeforeDeadline();
+    return getLockDeadlineAt(firstSessionAt, lockMinutes) || fallbackDeadlineAt;
   } catch {
     return fallbackDeadlineAt;
   }

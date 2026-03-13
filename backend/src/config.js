@@ -121,7 +121,7 @@ export const config = {
   frontendUrl: debug ? frontendUrlDebug : frontendUrlProd,
   backendUrl: debug ? backendUrlDebug : backendUrlProd,
   bootstrapAdminKey: process.env.BOOTSTRAP_ADMIN_KEY || "",
-  pickLockMinutesBeforeDeadline: Number(process.env.PICK_LOCK_MINUTES_BEFORE_DEADLINE || 30),
+  pickLockMinutesBeforeDeadline: Number(process.env.PICK_LOCK_MINUTES_BEFORE_DEADLINE || 1),
   jolpicaAutoSyncEnabled: process.env.JOLPICA_AUTO_SYNC_ENABLED !== "false",
   jolpicaAutoSyncIntervalMs: Math.max(60_000, Number(process.env.JOLPICA_AUTO_SYNC_INTERVAL_MS || 15 * 60 * 1000)),
   jolpicaAutoSyncSeason: Number(process.env.JOLPICA_AUTO_SYNC_SEASON || new Date().getUTCFullYear()),
