@@ -156,6 +156,10 @@ function getResultInputMeta(category, drivers, categories, resultValues) {
   };
 }
 
+function isSprintQualificationCategory(category) {
+  return /^sprint qualification p\d+$/i.test(String(category?.name || "").trim());
+}
+
 export default function AdminResultsPage() {
   const [races, setRaces] = useState([]);
   const [selectedRaceId, setSelectedRaceId] = useState("");
@@ -163,6 +167,8 @@ export default function AdminResultsPage() {
   const [resultValues, setResultValues] = useState({});
   const [tieBreakerValue, setTieBreakerValue] = useState("");
   const [message, setMessage] = useState("");
+  const [isImportingSprintQualifying, setIsImportingSprintQualifying] = useState(false);
+  const [isSavingSprintQualifying, setIsSavingSprintQualifying] = useState(false);
 
   useEffect(() => {
     apiFetch("/races")
@@ -196,13 +202,13 @@ export default function AdminResultsPage() {
     return raceDetail.categories.some((category) => isDriverSelectionCategory(category));
   }, [raceDetail]);
 
-  async function submitResults(e) {
-    e.preventDefault();
-    setMessage("");
+  const sprintQualificationCategories = useMemo(() => {
+    if (!raceDetail) return [];
+    return raceDetail.categories.filter((category) => isSprintQualificationCategory(category));
+  }, [raceDetail]);
 
-    if (!raceDetail) return;
-
-    const results = raceDetail.categories.map((category) => {
+  function buildCategoryResults(categories) {
+    return categories.map((category) => {
       const raw = (resultValues[category.id] || "").toString().trim();
 
       if (isDriverOfWeekendCategory(category.name)) {
@@ -219,6 +225,15 @@ export default function AdminResultsPage() {
         valueNumber: null
       };
     });
+  }
+
+  async function submitResults(e) {
+    e.preventDefault();
+    setMessage("");
+
+    if (!raceDetail) return;
+
+    const results = buildCategoryResults(raceDetail.categories);
 
     try {
       const res = await apiFetch(`/admin/races/${selectedRaceId}/results`, {
@@ -231,6 +246,43 @@ export default function AdminResultsPage() {
       setMessage(res.message || "Results saved");
     } catch (err) {
       setMessage(err.message);
+    }
+  }
+
+  async function importSprintQualifyingResults() {
+    if (!selectedRaceId) return;
+    setMessage("");
+    setIsImportingSprintQualifying(true);
+
+    try {
+      const res = await apiFetch(`/admin/races/${selectedRaceId}/results/sprint-qualifying/import`, {
+        method: "POST"
+      });
+      setMessage(res.message || "Sprint qualifying results imported");
+    } catch (err) {
+      setMessage(err.message);
+    } finally {
+      setIsImportingSprintQualifying(false);
+    }
+  }
+
+  async function saveSprintQualifyingResults() {
+    if (!selectedRaceId || sprintQualificationCategories.length === 0) return;
+    setMessage("");
+    setIsSavingSprintQualifying(true);
+
+    try {
+      const res = await apiFetch(`/admin/races/${selectedRaceId}/results/sprint-qualifying`, {
+        method: "POST",
+        body: JSON.stringify({
+          results: buildCategoryResults(sprintQualificationCategories)
+        })
+      });
+      setMessage(res.message || "Sprint qualifying results saved");
+    } catch (err) {
+      setMessage(err.message);
+    } finally {
+      setIsSavingSprintQualifying(false);
     }
   }
 
@@ -258,6 +310,30 @@ export default function AdminResultsPage() {
       {raceDetail ? (
         <form onSubmit={submitResults} className="card space-y-4 p-4">
           <h2 className="font-display text-2xl text-accent-cyan">{raceDetail.name}</h2>
+          {sprintQualificationCategories.length > 0 ? (
+            <div className="rounded-xl border border-white/20 bg-white/5 p-3">
+              <p className="text-sm font-semibold text-slate-100">Sprint Qualifying</p>
+              <p className="mt-1 text-xs text-slate-400">Use OpenF1 import when available, or save only the sprint qualifying categories without marking the full race completed.</p>
+              <div className="mt-3 flex flex-col gap-2 md:flex-row">
+                <button
+                  type="button"
+                  className="tap rounded-xl bg-accent-cyan px-4 py-2 font-bold text-track-900 disabled:opacity-60"
+                  onClick={importSprintQualifyingResults}
+                  disabled={isImportingSprintQualifying}
+                >
+                  {isImportingSprintQualifying ? "Importing Sprint Qualifying..." : "Import Sprint Qualifying"}
+                </button>
+                <button
+                  type="button"
+                  className="tap rounded-xl border border-white/30 px-4 py-2 font-bold text-white disabled:opacity-60"
+                  onClick={saveSprintQualifyingResults}
+                  disabled={isSavingSprintQualifying}
+                >
+                  {isSavingSprintQualifying ? "Saving Sprint Qualifying..." : "Save Sprint Qualifying Only"}
+                </button>
+              </div>
+            </div>
+          ) : null}
           {hasDriverOfWeekendCategory && (!raceDetail.drivers || raceDetail.drivers.length === 0) ? (
             <p className="text-sm text-red-300">This race has driver-based categories but no race drivers are configured.</p>
           ) : null}

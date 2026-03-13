@@ -10,6 +10,7 @@ import { fetchRaceSchedule, getLockDeadlineAt } from "./raceDeadline.js";
 import { getPickLockMinutesBeforeDeadline } from "./settings.js";
 
 const JOLPICA_BASE = "https://api.jolpi.ca/ergast/f1";
+const OPENF1_BASE = "https://api.openf1.org/v1";
 
 async function fetchJson(url) {
   const res = await fetch(url);
@@ -17,6 +18,16 @@ async function fetchJson(url) {
     throw new Error(`Jolpica request failed (${res.status}) for ${url}`);
   }
   return res.json();
+}
+
+async function fetchOpenF1Json(url) {
+  const res = await fetch(url);
+  if (!res.ok) {
+    throw new Error(`OpenF1 request failed (${res.status}) for ${url}`);
+  }
+
+  const payload = await res.json();
+  return Array.isArray(payload) ? payload : [];
 }
 
 function parseRaceDateTime(race) {
@@ -90,15 +101,74 @@ function buildDriverLookupKey(name) {
   return String(name || "").trim().toLowerCase();
 }
 
+function buildComparableDriverKey(name) {
+  return String(name || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-zA-Z0-9]+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
 function getFullDriverName(driver) {
   return `${driver?.givenName || ""} ${driver?.familyName || ""}`.trim();
+}
+
+function getDriverNameFromResultRow(row) {
+  if (row?.driverName) return String(row.driverName).trim();
+  return getFullDriverName(row?.Driver);
+}
+
+function buildLocalDriverAliasMap(driverNames) {
+  const aliases = new Map();
+
+  (driverNames || []).forEach((driverName) => {
+    const rawName = String(driverName || "").trim();
+    if (!rawName) return;
+
+    const comparableKey = buildComparableDriverKey(rawName);
+    if (comparableKey && !aliases.has(comparableKey)) aliases.set(comparableKey, rawName);
+
+    const withoutSuffix = comparableKey.replace(/\b(jr|sr)\b$/g, "").trim();
+    if (withoutSuffix && !aliases.has(withoutSuffix)) aliases.set(withoutSuffix, rawName);
+  });
+
+  return aliases;
+}
+
+function resolveLocalDriverName(driverName, localDriverAliases) {
+  const rawName = String(driverName || "").trim();
+  if (!rawName) return null;
+  if (!localDriverAliases || localDriverAliases.size === 0) return rawName;
+
+  const comparableKey = buildComparableDriverKey(rawName);
+  if (localDriverAliases.has(comparableKey)) return localDriverAliases.get(comparableKey);
+
+  const withoutSuffix = comparableKey.replace(/\b(jr|sr)\b$/g, "").trim();
+  if (localDriverAliases.has(withoutSuffix)) return localDriverAliases.get(withoutSuffix);
+
+  const comparableParts = comparableKey.split(" ").filter(Boolean);
+  const lastName = comparableParts.at(-1) || "";
+  const firstName = comparableParts[0] || "";
+
+  if (lastName) {
+    const matches = Array.from(localDriverAliases.entries()).filter(([key]) => {
+      const localParts = key.split(" ").filter(Boolean);
+      if (localParts.at(-1) !== lastName) return false;
+      if (!firstName) return true;
+      return localParts[0] === firstName || localParts.includes(firstName);
+    });
+    if (matches.length === 1) return matches[0][1];
+  }
+
+  return rawName;
 }
 
 function normalizeDriversFromRaceResults(results) {
   const seen = new Set();
   return (results || [])
     .map((row) => ({
-      name: getFullDriverName(row?.Driver),
+      name: getDriverNameFromResultRow(row),
       teamName: row?.Constructor?.name || null
     }))
     .filter((row) => row.name)
@@ -125,7 +195,7 @@ function buildDriverPositionMap(items) {
   const map = new Map();
   (items || []).forEach((item) => {
     const position = Number(item?.position);
-    const driverName = getFullDriverName(item?.Driver);
+    const driverName = getDriverNameFromResultRow(item);
     if (!Number.isInteger(position) || !driverName) return;
     map.set(driverName.toLowerCase(), position);
   });
@@ -136,7 +206,7 @@ function findFastestLapDriver(results) {
   const ranked = (results || [])
     .filter((row) => Number(row?.FastestLap?.rank) > 0)
     .sort((a, b) => Number(a.FastestLap.rank) - Number(b.FastestLap.rank));
-  return ranked[0] ? getFullDriverName(ranked[0].Driver) : null;
+  return ranked[0] ? getDriverNameFromResultRow(ranked[0]) : null;
 }
 
 function findTopTeamByPoints(results) {
@@ -159,7 +229,7 @@ function findTeamBattleOutcome(results, teamName) {
     .filter((row) => String(row?.Constructor?.name || "").trim().toLowerCase() === String(teamName).trim().toLowerCase())
     .map((row) => ({
       position: Number(row?.position),
-      driverName: getFullDriverName(row?.Driver)
+      driverName: getDriverNameFromResultRow(row)
     }))
     .filter((row) => Number.isInteger(row.position) && row.position > 0 && row.driverName)
     .sort((a, b) => a.position - b.position || a.driverName.localeCompare(b.driverName));
@@ -178,11 +248,13 @@ function findTeamBattleOutcome(results, teamName) {
   return { winningDriver, marginBand };
 }
 
-function buildOfficialResultsByCategory({ categories, qualifyingResults, sprintResults, raceResults }) {
+function buildOfficialResultsByCategory({ categories, qualifyingResults, sprintQualifyingResults, sprintResults, raceResults }) {
   const qualifyingMap = buildPositionMap(qualifyingResults, (row) => getFullDriverName(row?.Driver));
+  const sprintQualifyingMap = buildPositionMap(sprintQualifyingResults, (row) => getDriverNameFromResultRow(row));
   const sprintMap = buildPositionMap(sprintResults, (row) => getFullDriverName(row?.Driver));
   const raceMap = buildPositionMap(raceResults, (row) => getFullDriverName(row?.Driver));
   const qualifyingDriverPositions = buildDriverPositionMap(qualifyingResults);
+  const sprintQualifyingDriverPositions = buildDriverPositionMap(sprintQualifyingResults);
   const sprintDriverPositions = buildDriverPositionMap(sprintResults);
   const raceDriverPositions = buildDriverPositionMap(raceResults);
   const raceWinner = raceMap.get(1) || null;
@@ -201,6 +273,9 @@ function buildOfficialResultsByCategory({ categories, qualifyingResults, sprintR
       if (/^race qualification p\d+$/i.test(category.name)) {
         const position = Number(category.name.match(/p(\d+)/i)?.[1] || 0);
         valueText = qualifyingMap.get(position) || null;
+      } else if (/^sprint qualification p\d+$/i.test(category.name)) {
+        const position = Number(category.name.match(/p(\d+)/i)?.[1] || 0);
+        valueText = sprintQualifyingMap.get(position) || null;
       } else if (/^sprint result p\d+$/i.test(category.name)) {
         const position = Number(category.name.match(/p(\d+)/i)?.[1] || 0);
         valueText = sprintMap.get(position) || null;
@@ -211,7 +286,7 @@ function buildOfficialResultsByCategory({ categories, qualifyingResults, sprintR
         if (driverOfWeekendScope === "race-result") valueNumber = raceDriverPositions.get(fixedDriver) ?? null;
         else if (driverOfWeekendScope === "sprint-result") valueNumber = sprintDriverPositions.get(fixedDriver) ?? null;
         else if (driverOfWeekendScope === "race-qualification") valueNumber = qualifyingDriverPositions.get(fixedDriver) ?? null;
-        else if (driverOfWeekendScope === "sprint-qualification") valueNumber = qualifyingDriverPositions.get(fixedDriver) ?? null;
+        else if (driverOfWeekendScope === "sprint-qualification") valueNumber = sprintQualifyingDriverPositions.get(fixedDriver) ?? null;
         else valueNumber = raceDriverPositions.get(fixedDriver) ?? null;
       } else if (category.name === "Fastest Lap Driver") {
         valueText = fastestLapDriver;
@@ -360,6 +435,73 @@ async function replaceRaceDrivers(raceId, drivers) {
   await RaceDriver.insertMany(docs);
 }
 
+async function fetchSprintQualifyingResultsFromOpenF1({ season, round }) {
+  const schedule = await fetchRaceSchedule({ season, round }).catch(() => null);
+  const sprintQualifyingDateIso = schedule?.sprintQualifyingDateIso;
+  if (!sprintQualifyingDateIso) {
+    return { results: [], source: null, sessionKey: null };
+  }
+
+  const sprintQualifyingDate = new Date(sprintQualifyingDateIso);
+  if (Number.isNaN(sprintQualifyingDate.getTime())) {
+    return { results: [], source: null, sessionKey: null };
+  }
+
+  const dayStart = sprintQualifyingDate.toISOString().slice(0, 10);
+  const nextDay = new Date(`${dayStart}T00:00:00.000Z`);
+  nextDay.setUTCDate(nextDay.getUTCDate() + 1);
+  const nextDayText = nextDay.toISOString().slice(0, 10);
+
+  const sessions = await fetchOpenF1Json(
+    `${OPENF1_BASE}/sessions?year=${season}&session_name=${encodeURIComponent("Sprint Qualifying")}&date_start>=${dayStart}&date_start<${nextDayText}`
+  ).catch(() => []);
+
+  if (sessions.length === 0) {
+    return { results: [], source: null, sessionKey: null };
+  }
+
+  const targetSession = sessions
+    .map((session) => ({
+      ...session,
+      delta: Math.abs(new Date(session.date_start).getTime() - sprintQualifyingDate.getTime())
+    }))
+    .sort((left, right) => left.delta - right.delta)[0];
+
+  if (!targetSession?.session_key) {
+    return { results: [], source: null, sessionKey: null };
+  }
+
+  const [sessionResults, drivers] = await Promise.all([
+    fetchOpenF1Json(`${OPENF1_BASE}/session_result?session_key=${targetSession.session_key}`).catch(() => []),
+    fetchOpenF1Json(`${OPENF1_BASE}/drivers?session_key=${targetSession.session_key}`).catch(() => [])
+  ]);
+
+  const driverNameByNumber = new Map(
+    drivers.map((driver) => [
+      Number(driver.driver_number),
+      `${driver.first_name || ""} ${driver.last_name || ""}`.trim() || String(driver.full_name || "").trim()
+    ])
+  );
+
+  return {
+    results: sessionResults
+      .map((row) => ({
+        position: Number(row.position),
+        driverName: driverNameByNumber.get(Number(row.driver_number)) || null
+      }))
+      .filter((row) => Number.isInteger(row.position) && row.position > 0 && row.driverName),
+    source: "openf1",
+    sessionKey: String(targetSession.session_key)
+  };
+}
+
+function normalizeWeekendDriverNames(items, localDriverAliases) {
+  return (items || []).map((item) => {
+    const driverName = resolveLocalDriverName(getDriverNameFromResultRow(item), localDriverAliases);
+    return driverName ? { ...item, driverName } : item;
+  });
+}
+
 async function upsertRace({ primaryLeagueId, race, assignedLeagueIds }) {
   const raceDateIso = parseRaceDateTime(race);
   if (!raceDateIso) return { action: "skipped", raceId: null };
@@ -406,22 +548,29 @@ async function upsertRace({ primaryLeagueId, race, assignedLeagueIds }) {
 }
 
 async function getRoundWeekendData(season, round, includeSprint) {
-  const [qualifyingPayload, raceResultsPayload, sprintPayload] = await Promise.all([
+  const [qualifyingPayload, raceResultsPayload, sprintPayload, sprintQualifyingFallback] = await Promise.all([
     fetchJson(`${JOLPICA_BASE}/${season}/${round}/qualifying.json`).catch(() => null),
     fetchJson(`${JOLPICA_BASE}/${season}/${round}/results.json`).catch(() => null),
-    includeSprint ? fetchJson(`${JOLPICA_BASE}/${season}/${round}/sprint.json`).catch(() => null) : Promise.resolve(null)
+    includeSprint ? fetchJson(`${JOLPICA_BASE}/${season}/${round}/sprint.json`).catch(() => null) : Promise.resolve(null),
+    includeSprint ? fetchSprintQualifyingResultsFromOpenF1({ season, round }).catch(() => ({ results: [], source: null, sessionKey: null })) : Promise.resolve({ results: [], source: null, sessionKey: null })
   ]);
 
   return {
     qualifyingResults: qualifyingPayload?.MRData?.RaceTable?.Races?.[0]?.QualifyingResults || [],
+    sprintQualifyingResults: sprintQualifyingFallback.results || [],
     raceResults: raceResultsPayload?.MRData?.RaceTable?.Races?.[0]?.Results || [],
-    sprintResults: sprintPayload?.MRData?.RaceTable?.Races?.[0]?.SprintResults || []
+    sprintResults: sprintPayload?.MRData?.RaceTable?.Races?.[0]?.SprintResults || [],
+    sources: {
+      sprintQualifying: sprintQualifyingFallback.source || null,
+      sprintQualifyingSessionKey: sprintQualifyingFallback.sessionKey || null
+    }
   };
 }
 
 function hasPublishedWeekendResults(weekendData) {
   return Boolean(
     weekendData?.qualifyingResults?.length ||
+      weekendData?.sprintQualifyingResults?.length ||
       weekendData?.sprintResults?.length ||
       weekendData?.raceResults?.length
   );
@@ -429,15 +578,25 @@ function hasPublishedWeekendResults(weekendData) {
 
 async function syncLocalRaceResultsFromWeekendData(raceDoc, weekendData) {
   const categories = await PickCategory.find({ race: raceDoc._id }).lean().exec();
+  const raceDrivers = await RaceDriver.find({ race: raceDoc._id }).select("driver_name").lean().exec();
   if (categories.length === 0) {
     return { updated: false, reason: "No pick categories found for local race", raceId: String(raceDoc._id) };
   }
 
+  const localDriverAliases = buildLocalDriverAliasMap(raceDrivers.map((row) => row.driver_name));
+  const normalizedWeekendData = {
+    qualifyingResults: normalizeWeekendDriverNames(weekendData.qualifyingResults, localDriverAliases),
+    sprintQualifyingResults: normalizeWeekendDriverNames(weekendData.sprintQualifyingResults, localDriverAliases),
+    sprintResults: normalizeWeekendDriverNames(weekendData.sprintResults, localDriverAliases),
+    raceResults: normalizeWeekendDriverNames(weekendData.raceResults, localDriverAliases)
+  };
+
   const officialResults = buildOfficialResultsByCategory({
     categories,
-    qualifyingResults: weekendData.qualifyingResults,
-    sprintResults: weekendData.sprintResults,
-    raceResults: weekendData.raceResults
+    qualifyingResults: normalizedWeekendData.qualifyingResults,
+    sprintQualifyingResults: normalizedWeekendData.sprintQualifyingResults,
+    sprintResults: normalizedWeekendData.sprintResults,
+    raceResults: normalizedWeekendData.raceResults
   });
 
   if (officialResults.length === 0) {
@@ -469,8 +628,35 @@ async function syncLocalRaceResultsFromWeekendData(raceDoc, weekendData) {
     raceId: String(raceDoc._id),
     raceName: raceDoc.name,
     mappedCount: officialResults.length,
-    hasRaceResults: Boolean(weekendData?.raceResults?.length)
+    hasRaceResults: Boolean(weekendData?.raceResults?.length),
+    sources: weekendData?.sources || null
   };
+}
+
+export async function syncSprintQualifyingResultsForRace({ raceId }) {
+  const raceDoc = await Race.findById(raceId).lean().exec();
+  if (!raceDoc) {
+    return { updated: false, reason: "Race not found", raceId: String(raceId || "") };
+  }
+
+  const round = Number(raceDoc.external_round || 0);
+  const raceDate = new Date(raceDoc.race_date);
+  const season = Number.isNaN(raceDate.getTime()) ? null : raceDate.getUTCFullYear();
+  if (!season || !Number.isInteger(round) || round < 1) {
+    return { updated: false, reason: "Race has no valid season/round mapping", raceId: String(raceDoc._id) };
+  }
+
+  const weekendData = await getRoundWeekendData(season, round, true);
+  if (!weekendData?.sprintQualifyingResults?.length) {
+    return {
+      updated: false,
+      reason: "No sprint qualifying results available from configured data sources",
+      raceId: String(raceDoc._id),
+      sources: weekendData?.sources || null
+    };
+  }
+
+  return syncLocalRaceResultsFromWeekendData(raceDoc, weekendData);
 }
 
 export async function syncLatestRaceResultsFromJolpica({ leagueId, season }) {

@@ -4,7 +4,7 @@ import crypto from "crypto";
 import { authRequired, adminRequired } from "../middleware/auth.js";
 import { buildRateLimiter } from "../middleware/rateLimit.js";
 import { calculateRaceScores } from "../services/scoring.js";
-import { syncCompletedRaceResultsFromJolpica, syncLatestRaceResultsFromJolpica, syncSeasonFromJolpica } from "../services/jolpicaSync.js";
+import { syncCompletedRaceResultsFromJolpica, syncLatestRaceResultsFromJolpica, syncSeasonFromJolpica, syncSprintQualifyingResultsForRace } from "../services/jolpicaSync.js";
 import { deriveDeadlineAtFromCategories } from "../services/raceDeadline.js";
 import { config } from "../config.js";
 import { getJolpicaAutoSyncRuntimeStatus } from "../jobs/jolpicaAutoSync.js";
@@ -330,6 +330,135 @@ function collectReferencedDriverSelections(categories, submittedByCategoryId) {
 
 function getConfiguredTeamForCategory(category) {
   return String(category?.metadata?.fixedTeam || "").trim().toLowerCase();
+}
+
+function isSprintQualificationCategory(category) {
+  return /^sprint qualification p\d+$/i.test(String(category?.name || "").trim());
+}
+
+async function saveRaceResultsSet({
+  raceId,
+  results,
+  tieBreakerValue = null,
+  replaceAll = false,
+  markCompleted = false,
+  categoryFilter = () => true,
+  emptyCategoryError = "No matching categories found for this race"
+}) {
+  const { connectMongo } = await import("../mongo.js");
+  const RaceDriver = (await import("../models/RaceDriver.js")).default;
+  const PickCategory = (await import("../models/PickCategory.js")).default;
+  const Result = (await import("../models/Result.js")).default;
+  const Race = (await import("../models/Race.js")).default;
+  await connectMongo();
+
+  const [driversResRows, categoriesForRaceRows] = await Promise.all([
+    RaceDriver.find({ race: raceId }).lean().exec(),
+    PickCategory.find({ race: raceId }).lean().exec()
+  ]);
+
+  const filteredCategories = categoriesForRaceRows.filter((category) => categoryFilter(category));
+  if (filteredCategories.length === 0) {
+    throw new Error(emptyCategoryError);
+  }
+
+  const validDrivers = new Set(driversResRows.map((row) => row.driver_name.toLowerCase()));
+  const validTeams = new Set(
+    driversResRows
+      .map((row) => String(row.team_name || "").trim().toLowerCase())
+      .filter(Boolean)
+  );
+  const allowedMarginBands = new Set(["1-2", "3-4", "5+"]);
+  const categoriesById = new Map(categoriesForRaceRows.map((row) => [String(row._id || row.id), row]));
+  const filteredCategoryIds = filteredCategories.map((category) => String(category._id || category.id));
+  const filteredCategoryIdSet = new Set(filteredCategoryIds);
+  const filteredResults = (Array.isArray(results) ? results : []).filter((item) => filteredCategoryIdSet.has(String(item.categoryId)));
+
+  const submittedByCategoryId = new Map(filteredResults.map((item) => [String(item.categoryId), item]));
+  const missingCategory = filteredCategories.find((category) => !submittedByCategoryId.has(String(category._id || category.id)));
+  if (missingCategory) {
+    throw new Error(`Result for '${missingCategory.name}' is required`);
+  }
+
+  const teamCategoryResult = filteredResults.find((item) => {
+    const category = categoriesById.get(String(item.categoryId));
+    return category ? isTeamOfWeekendCategory(category.name) : false;
+  });
+  const selectedTeamOfWeekend = String(teamCategoryResult?.valueText || "").trim().toLowerCase();
+
+  if (replaceAll) {
+    await Result.deleteMany({ race: raceId }).exec();
+  } else {
+    await Result.deleteMany({ race: raceId, category: { $in: filteredCategoryIds } }).exec();
+  }
+
+  for (const result of filteredResults) {
+    const category = categoriesById.get(String(result.categoryId));
+    if (!category) throw new Error(`Invalid category for race: ${result.categoryId}`);
+
+    if (isDriverOfWeekendCategory(category.name)) {
+      const selectedPosition = Number(result.valueNumber);
+      if (!Number.isInteger(selectedPosition) || selectedPosition < 1 || selectedPosition > 20) {
+        throw new Error(`Result for '${category.name}' must be a position from 1 to 20`);
+      }
+    }
+
+    if (isDriverSelectionCategory(category)) {
+      const selectedDriver = String(result.valueText || "").trim().toLowerCase();
+      if (!selectedDriver || !validDrivers.has(selectedDriver)) {
+        throw new Error(`Result for '${category.name}' must be selected from the race driver list`);
+      }
+    }
+
+    if (isTeamBattleMarginCategory(category.name)) {
+      const selectedBand = String(result.valueText || "").trim();
+      if (!allowedMarginBands.has(selectedBand)) {
+        throw new Error("Team Battle Winning Margin must be one of: 1-2, 3-4, 5+");
+      }
+    }
+
+    if (isTeamOfWeekendCategory(category.name)) {
+      const team = String(result.valueText || "").trim().toLowerCase();
+      if (!team || !validTeams.has(team)) {
+        throw new Error("Team of the Weekend must match one of the race teams");
+      }
+    }
+
+    const configuredTeam = getConfiguredTeamForCategory(category);
+    const effectiveTeam = configuredTeam || selectedTeamOfWeekend;
+    if (isTeamBattleDriverCategory(category.name) && effectiveTeam) {
+      const selectedDriver = String(result.valueText || "").trim().toLowerCase();
+      const allowedTeamDrivers = new Set(
+        driversResRows
+          .filter((row) => String(row.team_name || "").trim().toLowerCase() === effectiveTeam)
+          .map((row) => (row.driver_name || row.name).toLowerCase())
+      );
+      if (!allowedTeamDrivers.has(selectedDriver)) {
+        throw new Error("Team Battle Winner (Driver) must belong to Team of the Weekend");
+      }
+    }
+
+    await Result.create({
+      race: raceId,
+      category: result.categoryId,
+      value_text: result.valueText || null,
+      value_number: result.valueNumber ?? null
+    });
+  }
+
+  const raceUpdate = {};
+  if (markCompleted) raceUpdate.status = "completed";
+  if (markCompleted || tieBreakerValue !== null) raceUpdate.tie_breaker_value = tieBreakerValue || null;
+  if (Object.keys(raceUpdate).length > 0) {
+    await Race.updateOne({ _id: raceId }, { $set: raceUpdate }).exec();
+  }
+
+  const scored = await calculateRaceScores(raceId);
+  return {
+    scored,
+    savedCount: filteredResults.length,
+    savedResults: filteredResults
+  };
 }
 
 async function createRaceWeekend(payload) {
@@ -1250,109 +1379,65 @@ router.post("/races/:raceId/categories", async (req, res) => {
 router.post("/races/:raceId/results", async (req, res) => {
   const { raceId } = req.params;
   const { results, tieBreakerValue } = req.body;
-
-  let driversResRows = [];
   try {
-    const { connectMongo } = await import("../mongo.js");
-    const RaceDriver = (await import("../models/RaceDriver.js")).default;
-    await connectMongo();
-    driversResRows = await RaceDriver.find({ race: raceId }).lean().exec();
-  } catch (err) {
-    console.error('Fetch race drivers failed', err);
-    return res.status(500).json({ error: 'Failed to fetch race drivers' });
-  }
-
-  const validDrivers = new Set(driversResRows.map((row) => row.driver_name.toLowerCase()));
-  const validTeams = new Set(
-    driversResRows
-      .map((row) => String(row.team_name || "").trim().toLowerCase())
-      .filter(Boolean)
-  );
-  const allowedMarginBands = new Set(["1-2", "3-4", "5+"]);
-
-  let categoriesForRaceRows = [];
-  try {
-    const { connectMongo } = await import("../mongo.js");
-    const PickCategory = (await import("../models/PickCategory.js")).default;
-    await connectMongo();
-    categoriesForRaceRows = await PickCategory.find({ race: raceId }).lean().exec();
-  } catch (err) {
-    console.error('Fetch pick categories failed', err);
-    return res.status(500).json({ error: 'Failed to fetch pick categories' });
-  }
-  const categoriesById = new Map(categoriesForRaceRows.map((row) => [String(row._id || row.id), row]));
-  const teamCategoryResult = (Array.isArray(results) ? results : []).find((item) => {
-    const cat = categoriesById.get(item.categoryId);
-    return cat ? isTeamOfWeekendCategory(cat.name) : false;
-  });
-  const selectedTeamOfWeekend = String(teamCategoryResult?.valueText || "").trim().toLowerCase();
-  const submittedByCategoryId = new Map((Array.isArray(results) ? results : []).map((item) => [String(item.categoryId), item]));
-  const referencedDriverSelections = collectReferencedDriverSelections(categoriesForRaceRows, submittedByCategoryId);
-
-  // Attempt Mongo path
-  try {
-    const { connectMongo } = await import("../mongo.js");
-    const Result = (await import("../models/Result.js")).default;
-    const Race = (await import("../models/Race.js")).default;
-    await connectMongo();
-
-    await Result.deleteMany({ race: raceId }).exec();
-
-    for (const result of results) {
-      const category = categoriesById.get(String(result.categoryId));
-      if (!category) return res.status(400).json({ error: `Invalid category for race: ${result.categoryId}` });
-
-      if (isDriverOfWeekendCategory(category.name)) {
-        const selectedPosition = Number(result.valueNumber);
-        if (!Number.isInteger(selectedPosition) || selectedPosition < 1 || selectedPosition > 20) {
-          return res.status(400).json({ error: `Result for '${category.name}' must be a position from 1 to 20` });
-        }
-      }
-
-      if (isDriverSelectionCategory(category)) {
-        const selectedDriver = String(result.valueText || "").trim().toLowerCase();
-        if (!selectedDriver || !validDrivers.has(selectedDriver)) {
-          return res.status(400).json({ error: `Result for '${category.name}' must be selected from the race driver list` });
-        }
-      }
-
-      if (isTeamBattleMarginCategory(category.name)) {
-        const selectedBand = String(result.valueText || "").trim();
-        if (!allowedMarginBands.has(selectedBand)) {
-          return res.status(400).json({ error: "Team Battle Winning Margin must be one of: 1-2, 3-4, 5+" });
-        }
-      }
-
-      if (isTeamOfWeekendCategory(category.name)) {
-        const team = String(result.valueText || "").trim().toLowerCase();
-        if (!team || !validTeams.has(team)) {
-          return res.status(400).json({ error: "Team of the Weekend must match one of the race teams" });
-        }
-      }
-
-      const configuredTeam = getConfiguredTeamForCategory(category);
-      const effectiveTeam = configuredTeam || selectedTeamOfWeekend;
-      if (isTeamBattleDriverCategory(category.name) && effectiveTeam) {
-        const selectedDriver = String(result.valueText || "").trim().toLowerCase();
-        const allowedTeamDrivers = new Set(
-          driversResRows
-            .filter((row) => String(row.team_name || row.team_name || "").trim().toLowerCase() === effectiveTeam)
-            .map((row) => (row.driver_name || row.name).toLowerCase())
-        );
-        if (!allowedTeamDrivers.has(selectedDriver)) {
-          return res.status(400).json({ error: "Team Battle Winner (Driver) must belong to Team of the Weekend" });
-        }
-      }
-
-      await Result.create({ race: raceId, category: result.categoryId, value_text: result.valueText || null, value_number: result.valueNumber ?? null });
-    }
-
-    await Race.updateOne({ _id: raceId }, { $set: { status: 'completed', tie_breaker_value: tieBreakerValue || null } }).exec();
-    const scored = await calculateRaceScores(raceId);
-    return res.json({ message: "Results saved and scores calculated", scored });
+    const saved = await saveRaceResultsSet({
+      raceId,
+      results,
+      tieBreakerValue,
+      replaceAll: true,
+      markCompleted: true
+    });
+    return res.json({ message: "Results saved and scores calculated", scored: saved.scored, savedCount: saved.savedCount });
   } catch (err) {
     console.error('Save race results failed', err);
-    return res.status(500).json({ error: 'Failed to save race results' });
+    return res.status(400).json({ error: err.message || 'Failed to save race results' });
+  }
+});
+
+router.post("/races/:raceId/results/sprint-qualifying", async (req, res) => {
+  const { raceId } = req.params;
+  const { results } = req.body || {};
+
+  try {
+    const saved = await saveRaceResultsSet({
+      raceId,
+      results,
+      replaceAll: false,
+      markCompleted: false,
+      categoryFilter: isSprintQualificationCategory,
+      emptyCategoryError: "No Sprint Qualification categories are configured for this race"
+    });
+
+    return res.json({
+      message: "Sprint qualifying results saved and scores recalculated",
+      scored: saved.scored,
+      savedCount: saved.savedCount
+    });
+  } catch (err) {
+    console.error("Save sprint qualifying results failed", err);
+    return res.status(400).json({ error: err.message || "Failed to save sprint qualifying results" });
+  }
+});
+
+router.post("/races/:raceId/results/sprint-qualifying/import", async (req, res) => {
+  const { raceId } = req.params;
+
+  try {
+    const summary = await syncSprintQualifyingResultsForRace({ raceId });
+    if (!summary.updated) {
+      return res.status(409).json({
+        error: summary.reason || "No sprint qualifying data could be imported",
+        sources: summary.sources || null
+      });
+    }
+
+    return res.json({
+      message: "Sprint qualifying results imported and scores recalculated",
+      summary
+    });
+  } catch (err) {
+    console.error("Import sprint qualifying results failed", err);
+    return res.status(500).json({ error: "Failed to import sprint qualifying results" });
   }
 });
 
