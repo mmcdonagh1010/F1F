@@ -319,7 +319,7 @@ router.get("/season/player/:userId", authRequired, async (req, res) => {
 
   const racesDocs = await Race.find({ leagues: leagueId, race_date: { $gte: new Date(`${year}-01-01`), $lte: new Date(`${year}-12-31`) } })
     .sort({ race_date: 1 })
-    .select('name race_date')
+    .select('name race_date external_round')
     .lean()
     .exec();
 
@@ -373,13 +373,21 @@ router.get("/season/player/:userId", authRequired, async (req, res) => {
     categoriesByRace.set(key, list);
   }
 
-  const resultsByCategory = new Map(resultDocs.map((row) => [String(row.category), row]));
-  const actualPositionByScopeAndDriver = buildActualPositionByScopeAndDriver(categoryDocs, resultsByCategory);
-
   let totalPoints = 0;
-  const races = raceDetails.map((race) => {
+  const races = await Promise.all(raceDetails.map(async (race) => {
     const raceId = race.raceId || String(race._id);
     const categories = categoriesByRace.get(raceId) || [];
+    const raceResults = resultDocs.filter((row) => String(row.race) === raceId);
+    const actualPositionByScopeAndDriver = await resolveActualPositionByScopeAndDriver({
+      race: {
+        _id: raceId,
+        race_date: race.raceDate || race.race_date,
+        external_round: racesDocs.find((row) => String(row._id) === raceId)?.external_round || null
+      },
+      categories,
+      resultsByCategory: new Map(raceResults.map((row) => [String(row.category), row])),
+      yearOverride: year
+    });
     let racePoints = 0;
 
     const picks = categories.map((category) => {
@@ -412,7 +420,7 @@ router.get("/season/player/:userId", authRequired, async (req, res) => {
       racePoints,
       picks
     };
-  });
+  }));
 
   return res.json({
     year,
