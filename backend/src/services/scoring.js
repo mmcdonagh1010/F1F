@@ -1,4 +1,6 @@
 import PickCategory from "../models/PickCategory.js";
+import Race from "../models/Race.js";
+import RaceDriver from "../models/RaceDriver.js";
 import Result from "../models/Result.js";
 import Pick from "../models/Pick.js";
 import Score from "../models/Score.js";
@@ -63,6 +65,45 @@ export function buildActualPositionByScopeAndDriver(categories, resultsByCategor
     if (!driverName) continue;
 
     actualPositionByScopeAndDriver.set(`${meta.scope}:${driverName}`, meta.position);
+  }
+
+  return actualPositionByScopeAndDriver;
+}
+
+export async function resolveActualPositionByScopeAndDriver({
+  race,
+  raceId,
+  categories,
+  resultsByCategory,
+  yearOverride = null
+}) {
+  let actualPositionByScopeAndDriver = buildActualPositionByScopeAndDriver(categories, resultsByCategory);
+
+  const resolvedRace = race || (raceId ? await Race.findById(raceId).select("_id external_round race_date").lean().exec() : null);
+  const round = Number(resolvedRace?.external_round || 0);
+  const season = Number(new Date(resolvedRace?.race_date).getUTCFullYear()) || Number(yearOverride) || 0;
+
+  if (!resolvedRace?._id || !Number.isInteger(round) || round < 1 || !season) {
+    return actualPositionByScopeAndDriver;
+  }
+
+  const includeSprint = (categories || []).some((category) => String(category?.name || "").toLowerCase().includes("sprint"));
+  const raceDrivers = await RaceDriver.find({ race: resolvedRace._id }).select("driver_name").lean().exec();
+
+  try {
+    const { buildRaceActualPositionMap } = await import("./jolpicaSync.js");
+    const syncedActualPositions = await buildRaceActualPositionMap({
+      season,
+      round,
+      raceDrivers: raceDrivers.map((row) => row.driver_name),
+      includeSprint
+    });
+
+    if (syncedActualPositions.size > 0) {
+      actualPositionByScopeAndDriver = syncedActualPositions;
+    }
+  } catch {
+    // Fall back to the local result map if external weekend data is unavailable.
   }
 
   return actualPositionByScopeAndDriver;
@@ -147,9 +188,14 @@ export async function calculateRaceScores(raceId, targetLeagueId = null) {
   if (targetLeagueId) picksQuery.league = targetLeagueId;
   const picks = await Pick.find(picksQuery).lean().exec();
 
+  const raceDoc = await Race.findById(raceId).select("_id external_round race_date").lean().exec();
   const resultsByCategory = new Map(results.map((row) => [String(row.category), row]));
   const categoriesById = new Map(categories.map((row) => [String(row._id), row]));
-  const actualPositionByScopeAndDriver = buildActualPositionByScopeAndDriver(categories, resultsByCategory);
+  const actualPositionByScopeAndDriver = await resolveActualPositionByScopeAndDriver({
+    race: raceDoc,
+    categories,
+    resultsByCategory
+  });
 
   const leagueUserScoreMap = new Map();
 

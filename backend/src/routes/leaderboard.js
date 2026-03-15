@@ -3,21 +3,15 @@ import { authRequired } from "../middleware/auth.js";
 import LeagueMember from "../models/LeagueMember.js";
 import League from "../models/League.js";
 import Race from "../models/Race.js";
-import RaceDriver from "../models/RaceDriver.js";
 import PickCategory from "../models/PickCategory.js";
 import Pick from "../models/Pick.js";
 import Result from "../models/Result.js";
-import Score from "../models/Score.js";
 import User from "../models/User.js";
 import mongoose from "mongoose";
-import { buildRaceActualPositionMap } from "../services/jolpicaSync.js";
 import {
-  buildActualPositionByScopeAndDriver,
   buildPickScoreDetail,
-  calculatePickPoints,
   formatEntryValue,
-  isDriverOfWeekendCategory,
-  parsePositionCategoryMeta
+  resolveActualPositionByScopeAndDriver
 } from "../services/scoring.js";
 
 const router = express.Router();
@@ -52,6 +46,76 @@ function toObjectIdIfValid(value) {
   return mongoose.Types.ObjectId.isValid(value) ? new mongoose.Types.ObjectId(value) : value;
 }
 
+async function buildSeasonLeaderboardScoreMaps({ leagueId, races, members, year }) {
+  const raceIds = races.map((race) => String(race._id));
+  const memberIds = members.map((member) => String(member.user._id));
+
+  const pointsByUser = new Map(memberIds.map((userId) => [userId, new Map()]));
+  const totalPointsByUser = new Map(memberIds.map((userId) => [userId, 0]));
+
+  if (raceIds.length === 0 || memberIds.length === 0) {
+    return { pointsByUser, totalPointsByUser };
+  }
+
+  const [categoryDocs, pickDocs, resultDocs] = await Promise.all([
+    PickCategory.find({ race: { $in: raceIds } }).sort({ race: 1, display_order: 1 }).lean().exec(),
+    Pick.find({ race: { $in: raceIds }, league: leagueId, status: "submitted" }).lean().exec(),
+    Result.find({ race: { $in: raceIds } }).lean().exec()
+  ]);
+
+  const categoriesByRace = new Map();
+  for (const category of categoryDocs) {
+    const key = String(category.race);
+    const list = categoriesByRace.get(key) || [];
+    list.push(category);
+    categoriesByRace.set(key, list);
+  }
+
+  const picksByRaceCategoryAndUser = new Map();
+  for (const pick of pickDocs) {
+    picksByRaceCategoryAndUser.set(`${String(pick.race)}:${String(pick.category)}:${String(pick.user)}`, pick);
+  }
+
+  const resultsByRace = new Map();
+  for (const result of resultDocs) {
+    const key = String(result.race);
+    const list = resultsByRace.get(key) || [];
+    list.push(result);
+    resultsByRace.set(key, list);
+  }
+
+  for (const race of races) {
+    const raceId = String(race._id);
+    const categories = categoriesByRace.get(raceId) || [];
+    const raceResults = resultsByRace.get(raceId) || [];
+    const resultsByCategory = new Map(raceResults.map((row) => [String(row.category), row]));
+    const actualPositionByScopeAndDriver = await resolveActualPositionByScopeAndDriver({
+      race,
+      categories,
+      resultsByCategory,
+      yearOverride: year
+    });
+
+    for (const member of members) {
+      const userId = String(member.user._id);
+      let racePoints = 0;
+
+      for (const category of categories) {
+        const categoryId = String(category._id);
+        const pick = picksByRaceCategoryAndUser.get(`${raceId}:${categoryId}:${userId}`);
+        const result = resultsByCategory.get(categoryId);
+        const scoreDetail = buildPickScoreDetail(category, pick, result, actualPositionByScopeAndDriver);
+        racePoints += scoreDetail.points;
+      }
+
+      pointsByUser.get(userId)?.set(raceId, racePoints);
+      totalPointsByUser.set(userId, (totalPointsByUser.get(userId) || 0) + racePoints);
+    }
+  }
+
+  return { pointsByUser, totalPointsByUser };
+}
+
 router.get("/season", authRequired, async (req, res) => {
   const nowYear = new Date().getUTCFullYear();
   const year = Number(req.query.year || nowYear);
@@ -84,14 +148,7 @@ router.get("/season", authRequired, async (req, res) => {
 
   const raceIds = races.map((r) => String(r._id));
   const members = await getPredictionLeagueMembers(leagueId);
-
-  const pointsDocs = await Score.find({ league: leagueId, race: { $in: raceIds } }).lean().exec();
-  const pointsByUser = new Map();
-  for (const row of pointsDocs) {
-    const userMap = pointsByUser.get(String(row.user)) || new Map();
-    userMap.set(String(row.race), Number(row.points));
-    pointsByUser.set(String(row.user), userMap);
-  }
+  const { pointsByUser } = await buildSeasonLeaderboardScoreMaps({ leagueId, races, members, year });
 
   const rows = members.map((m) => {
     const userId = String(m.user._id);
@@ -166,35 +223,21 @@ router.get("/latest", authRequired, async (req, res) => {
   const picks = await Pick.find({ race: latestRace._id, league: leagueId, status: 'submitted' }).lean().exec();
   const results = await Result.find({ race: latestRace._id }).lean().exec();
 
-  const overallDocs = await Score.aggregate([
-    { $match: { league: leagueObjectId } },
-    { $lookup: { from: 'races', localField: 'race', foreignField: '_id', as: 'race' } },
-    { $unwind: '$race' },
-    { $match: { 'race.race_date': { $gte: new Date(`${year}-01-01`), $lte: new Date(`${year}-12-31`) } } },
-    { $group: { _id: '$user', total_points: { $sum: '$points' } } }
-  ]).exec();
-  const overallByUser = new Map(overallDocs.map((d) => [String(d._id), Number(d.total_points)]));
+  const { totalPointsByUser: overallByUser } = await buildSeasonLeaderboardScoreMaps({
+    leagueId,
+    races: candidateRaces,
+    members,
+    year
+  });
 
   const pickMap = new Map(picks.map((p) => [`${String(p.user)}:${String(p.category)}`, p]));
   const resultMap = new Map(results.map((r) => [String(r.category), r]));
-  let actualPositionByScopeAndDriver = buildActualPositionByScopeAndDriver(categories, resultMap);
-
-  const round = Number(latestRace.external_round || 0);
-  const season = Number(new Date(latestRace.race_date).getUTCFullYear()) || year;
-  if (Number.isInteger(round) && round > 0) {
-    const raceDrivers = await RaceDriver.find({ race: latestRace._id }).select("driver_name").lean().exec();
-    const includeSprint = categories.some((category) => String(category.name || "").toLowerCase().includes("sprint"));
-    const syncedActualPositions = await buildRaceActualPositionMap({
-      season,
-      round,
-      raceDrivers: raceDrivers.map((row) => row.driver_name),
-      includeSprint
-    }).catch(() => new Map());
-
-    if (syncedActualPositions.size > 0) {
-      actualPositionByScopeAndDriver = syncedActualPositions;
-    }
-  }
+  const actualPositionByScopeAndDriver = await resolveActualPositionByScopeAndDriver({
+    race: latestRace,
+    categories,
+    resultsByCategory: resultMap,
+    yearOverride: year
+  });
 
   const rows = members.map((m) => {
     let raceTotal = 0;
