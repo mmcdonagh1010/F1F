@@ -165,7 +165,8 @@ function buildRaceCategories(
   hasSprintWeekend = false,
   positionSlots = [],
   positionSlotsByOption = {},
-  pointOverrides = {}
+  pointOverrides = {},
+  fixedTeamOfWeekend = ""
 ) {
   const uniqueOptions = [...new Set(predictionOptions)];
   const normalizedSlots = normalizePositionSlots(positionSlots);
@@ -237,29 +238,48 @@ function buildRaceCategories(
       }
 
       if (key === "teamOfWeekend") {
-        return [
+        const metadata = fixedTeamOfWeekend ? { fixedTeam: fixedTeamOfWeekend } : {};
+        const categories = [
           {
-            name: "Team of the Weekend",
+            name: "Race Team Battle Winner (Driver)",
             isPositionBased: false,
+            metadata,
             exactPoints: points.exactPoints,
             partialPoints: points.partialPoints,
             displayOrder: idx + 1
           },
           {
-            name: "Team Battle Winner (Driver)",
+            name: "Race Team Battle Winning Margin",
             isPositionBased: false,
+            metadata,
             exactPoints: points.exactPoints,
             partialPoints: points.partialPoints,
             displayOrder: idx + 2
-          },
-          {
-            name: "Team Battle Winning Margin",
-            isPositionBased: false,
-            exactPoints: points.exactPoints,
-            partialPoints: points.partialPoints,
-            displayOrder: idx + 3
           }
         ];
+
+        if (hasSprintWeekend) {
+          categories.push(
+            {
+              name: "Sprint Team Battle Winner (Driver)",
+              isPositionBased: false,
+              metadata,
+              exactPoints: points.exactPoints,
+              partialPoints: points.partialPoints,
+              displayOrder: idx + 3
+            },
+            {
+              name: "Sprint Team Battle Winning Margin",
+              isPositionBased: false,
+              metadata,
+              exactPoints: points.exactPoints,
+              partialPoints: points.partialPoints,
+              displayOrder: idx + 4
+            }
+          );
+        }
+
+        return categories;
       }
 
       return {
@@ -476,7 +496,8 @@ async function createRaceWeekend(payload) {
     hasSprintWeekend,
     externalRound,
     drivers,
-    pointOverrides
+    pointOverrides,
+    fixedTeamOfWeekend
   } = payload;
 
   const roundValue = externalRound ? Number(externalRound) : null;
@@ -515,7 +536,8 @@ async function createRaceWeekend(payload) {
       Boolean(hasSprintWeekend),
       positionSlots,
       positionSlotsByOption && typeof positionSlotsByOption === "object" ? positionSlotsByOption : {},
-      pointOverrides && typeof pointOverrides === "object" ? pointOverrides : {}
+      pointOverrides && typeof pointOverrides === "object" ? pointOverrides : {},
+      String(fixedTeamOfWeekend || "").trim()
     );
 
     const resolvedDeadlineAt = await deriveDeadlineAtFromCategories({

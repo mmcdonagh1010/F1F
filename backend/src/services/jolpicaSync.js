@@ -248,6 +248,63 @@ function findTeamBattleOutcome(results, teamName) {
   return { winningDriver, marginBand };
 }
 
+function findWeekendTeamBattleOutcome({ raceResults, sprintResults, teamName }) {
+  if (!teamName) return { winningDriver: null, marginBand: null };
+
+  const aggregate = new Map();
+
+  function addSessionResults(sessionResults, sessionWeight) {
+    (sessionResults || [])
+      .filter((row) => String(row?.Constructor?.name || "").trim().toLowerCase() === String(teamName).trim().toLowerCase())
+      .forEach((row) => {
+        const position = Number(row?.position);
+        const driverName = getDriverNameFromResultRow(row);
+        if (!Number.isInteger(position) || position <= 0 || !driverName) return;
+
+        const key = driverName.toLowerCase();
+        const current = aggregate.get(key) || {
+          driverName,
+          totalPosition: 0,
+          sessionsCount: 0,
+          racePosition: Number.POSITIVE_INFINITY,
+          sprintPosition: Number.POSITIVE_INFINITY,
+          sessionWeight: 0
+        };
+
+        current.totalPosition += position;
+        current.sessionsCount += 1;
+        current.sessionWeight += sessionWeight;
+        if (sessionWeight === 2) current.racePosition = position;
+        if (sessionWeight === 1) current.sprintPosition = position;
+
+        aggregate.set(key, current);
+      });
+  }
+
+  addSessionResults(sprintResults, 1);
+  addSessionResults(raceResults, 2);
+
+  const ranked = Array.from(aggregate.values()).sort((left, right) => {
+    if (left.totalPosition !== right.totalPosition) return left.totalPosition - right.totalPosition;
+    if (left.racePosition !== right.racePosition) return left.racePosition - right.racePosition;
+    if (left.sprintPosition !== right.sprintPosition) return left.sprintPosition - right.sprintPosition;
+    return left.driverName.localeCompare(right.driverName);
+  });
+
+  if (ranked.length === 0) {
+    return { winningDriver: null, marginBand: null };
+  }
+
+  const winningDriver = ranked[0].driverName;
+  if (ranked.length < 2) {
+    return { winningDriver, marginBand: null };
+  }
+
+  const gap = Math.abs(ranked[1].totalPosition - ranked[0].totalPosition);
+  const marginBand = gap <= 2 ? "1-2" : gap <= 4 ? "3-4" : "5+";
+  return { winningDriver, marginBand };
+}
+
 function buildOfficialResultsByCategory({ categories, qualifyingResults, sprintQualifyingResults, sprintResults, raceResults }) {
   const qualifyingMap = buildPositionMap(qualifyingResults, (row) => getFullDriverName(row?.Driver));
   const sprintQualifyingMap = buildPositionMap(sprintQualifyingResults, (row) => getDriverNameFromResultRow(row));
@@ -259,14 +316,19 @@ function buildOfficialResultsByCategory({ categories, qualifyingResults, sprintQ
   const raceDriverPositions = buildDriverPositionMap(raceResults);
   const raceWinner = raceMap.get(1) || null;
   const fastestLapDriver = findFastestLapDriver(raceResults);
-  const teamOfWeekend = findTopTeamByPoints(raceResults);
+  const weekendResults = [...(raceResults || []), ...(sprintResults || [])];
+  const teamOfWeekend = findTopTeamByPoints(weekendResults);
 
   return categories
     .map((category) => {
       let valueText = null;
       let valueNumber = null;
       const fixedTeam = String(category?.metadata?.fixedTeam || "").trim();
-      const teamBattleOutcome = findTeamBattleOutcome(raceResults, fixedTeam || teamOfWeekend);
+      const teamBattleOutcome = findWeekendTeamBattleOutcome({
+        raceResults,
+        sprintResults,
+        teamName: fixedTeam || teamOfWeekend
+      });
       const fixedDriver = String(category?.metadata?.fixedDriver || "").trim().toLowerCase();
       const driverOfWeekendScope = String(category?.metadata?.driverOfWeekendScope || "").trim();
 
@@ -290,8 +352,18 @@ function buildOfficialResultsByCategory({ categories, qualifyingResults, sprintQ
         else valueNumber = raceDriverPositions.get(fixedDriver) ?? null;
       } else if (category.name === "Fastest Lap Driver") {
         valueText = fastestLapDriver;
-      } else if (category.name === "Team of the Weekend") {
-        valueText = fixedTeam || teamOfWeekend;
+      } else if (/race team battle/i.test(category.name) && /driver/i.test(category.name)) {
+        const raceTeamBattleOutcome = findTeamBattleOutcome(raceResults, fixedTeam || teamOfWeekend);
+        valueText = raceTeamBattleOutcome.winningDriver;
+      } else if (/race team battle/i.test(category.name) && /margin/i.test(category.name)) {
+        const raceTeamBattleOutcome = findTeamBattleOutcome(raceResults, fixedTeam || teamOfWeekend);
+        valueText = raceTeamBattleOutcome.marginBand;
+      } else if (/sprint team battle/i.test(category.name) && /driver/i.test(category.name)) {
+        const sprintTeamBattleOutcome = findTeamBattleOutcome(sprintResults, fixedTeam || teamOfWeekend);
+        valueText = sprintTeamBattleOutcome.winningDriver;
+      } else if (/sprint team battle/i.test(category.name) && /margin/i.test(category.name)) {
+        const sprintTeamBattleOutcome = findTeamBattleOutcome(sprintResults, fixedTeam || teamOfWeekend);
+        valueText = sprintTeamBattleOutcome.marginBand;
       } else if (/team battle/i.test(category.name) && /driver/i.test(category.name)) {
         valueText = teamBattleOutcome.winningDriver;
       } else if (/team battle/i.test(category.name) && /margin/i.test(category.name)) {
@@ -306,6 +378,53 @@ function buildOfficialResultsByCategory({ categories, qualifyingResults, sprintQ
       };
     })
     .filter((row) => row.value_text || Number.isInteger(row.value_number));
+}
+
+function shouldIncludeSprintWeekendData(categories) {
+  return (categories || []).some((category) => {
+    const normalized = String(category?.name || "").toLowerCase();
+    return (
+      normalized.includes("sprint") ||
+      normalized.includes("team of the weekend") ||
+      normalized.includes("team battle")
+    );
+  });
+}
+
+export async function buildRaceActualPositionMap({ season, round, raceDrivers = [], includeSprint = false }) {
+  if (!Number.isInteger(Number(season)) || !Number.isInteger(Number(round)) || Number(round) < 1) {
+    return new Map();
+  }
+
+  const weekendData = await getRoundWeekendData(Number(season), Number(round), includeSprint);
+  if (!hasPublishedWeekendResults(weekendData)) {
+    return new Map();
+  }
+
+  const localDriverAliases = buildLocalDriverAliasMap(raceDrivers);
+  const normalizedWeekendData = {
+    qualifyingResults: normalizeWeekendDriverNames(weekendData.qualifyingResults, localDriverAliases),
+    sprintQualifyingResults: normalizeWeekendDriverNames(weekendData.sprintQualifyingResults, localDriverAliases),
+    sprintResults: normalizeWeekendDriverNames(weekendData.sprintResults, localDriverAliases),
+    raceResults: normalizeWeekendDriverNames(weekendData.raceResults, localDriverAliases)
+  };
+
+  const actualPositionByScopeAndDriver = new Map();
+
+  buildDriverPositionMap(normalizedWeekendData.qualifyingResults).forEach((position, driverName) => {
+    actualPositionByScopeAndDriver.set(`race-qualification:${driverName}`, position);
+  });
+  buildDriverPositionMap(normalizedWeekendData.sprintQualifyingResults).forEach((position, driverName) => {
+    actualPositionByScopeAndDriver.set(`sprint-qualification:${driverName}`, position);
+  });
+  buildDriverPositionMap(normalizedWeekendData.sprintResults).forEach((position, driverName) => {
+    actualPositionByScopeAndDriver.set(`sprint-result:${driverName}`, position);
+  });
+  buildDriverPositionMap(normalizedWeekendData.raceResults).forEach((position, driverName) => {
+    actualPositionByScopeAndDriver.set(`race-result:${driverName}`, position);
+  });
+
+  return actualPositionByScopeAndDriver;
 }
 
 function extractLatestRaceResults(payload) {
@@ -691,40 +810,37 @@ export async function syncLatestRaceResultsFromJolpica({ leagueId, season }) {
     };
   }
 
-  const categories = await PickCategory.find({ race: targetRace._id }).lean().exec();
-  const mappedResults = categories
-    .map((category) => ({
-      categoryId: String(category._id),
-      valueText: pickAutoResultForCategory(category.name, latestRace)
-    }))
-    .filter((item) => item.valueText);
+  const categories = await PickCategory.find({ race: targetRace._id }).select("name").lean().exec();
+  const includeSprint = shouldIncludeSprintWeekendData(categories);
+  const weekendData = await getRoundWeekendData(chosenSeason, latestRace.round, includeSprint);
 
-  if (mappedResults.length === 0) {
+  if (!hasPublishedWeekendResults(weekendData)) {
     return {
       updated: false,
-      reason: "No categories matched auto-result mapping for latest race",
+      reason: "No published weekend results available for latest race",
       latestRace,
       raceId: String(targetRace._id)
     };
   }
 
-  for (const result of mappedResults) {
-    await Result.updateOne(
-      { race: targetRace._id, category: result.categoryId },
-      { $set: { value_text: result.valueText, value_number: null, created_at: new Date() } },
-      { upsert: true }
-    ).exec();
+  const summary = await syncLocalRaceResultsFromWeekendData(targetRace, weekendData);
+  if (!summary.updated) {
+    return {
+      updated: false,
+      reason: summary.reason,
+      latestRace,
+      raceId: String(targetRace._id)
+    };
   }
-
-  await Race.updateOne({ _id: targetRace._id }, { $set: { status: "completed" } }).exec();
-  await calculateRaceScores(targetRace._id);
 
   return {
     updated: true,
     raceId: String(targetRace._id),
     raceName: targetRace.name,
-    mappedCount: mappedResults.length,
-    latestRace
+    mappedCount: summary.mappedCount,
+    latestRace,
+    hasRaceResults: summary.hasRaceResults,
+    sources: summary.sources || null
   };
 }
 
@@ -815,7 +931,7 @@ export async function syncCompletedRaceResultsFromJolpica({ season }) {
     const cacheKey = `${chosenSeason}:${round}`;
     if (!cache.has(cacheKey)) {
       const categories = await PickCategory.find({ race: raceDoc._id }).select("name").lean().exec();
-      const includeSprint = categories.some((category) => String(category.name || "").toLowerCase().includes("sprint"));
+      const includeSprint = shouldIncludeSprintWeekendData(categories);
       cache.set(cacheKey, await getRoundWeekendData(chosenSeason, round, includeSprint));
     }
 

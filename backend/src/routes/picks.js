@@ -7,6 +7,10 @@ import RaceDriver from "../models/RaceDriver.js";
 import LeagueMember from "../models/LeagueMember.js";
 import User from "../models/User.js";
 import Result from "../models/Result.js";
+import {
+  buildActualPositionByScopeAndDriver,
+  calculatePickPoints as calculateScorePoints
+} from "../services/scoring.js";
 
 const router = express.Router();
 
@@ -23,62 +27,17 @@ function isTeamOfWeekendCategory(categoryName) {
   return String(categoryName || "").toLowerCase().includes("team of the weekend");
 }
 
+function isRaceTeamBattleCategory(categoryName) {
+  return String(categoryName || "").toLowerCase().includes("race team battle");
+}
+
+function isSprintTeamBattleCategory(categoryName) {
+  return String(categoryName || "").toLowerCase().includes("sprint team battle");
+}
+
 function isTeamBattleDriverCategory(categoryName) {
   const normalized = String(categoryName || "").toLowerCase();
   return normalized.includes("team battle") && normalized.includes("driver");
-}
-
-function parsePositionCategoryMeta(categoryName) {
-  const match = String(categoryName || "").match(/(race result|sprint result|race qualification|sprint qualification)\s*p(\d+)/i);
-  if (!match) return null;
-
-  let scope = "race-result";
-  const normalized = match[1].toLowerCase();
-  if (normalized.includes("sprint") && normalized.includes("qualification")) scope = "sprint-qualification";
-  else if (normalized.includes("race") && normalized.includes("qualification")) scope = "race-qualification";
-  else if (normalized.includes("sprint")) scope = "sprint-result";
-
-  return {
-    scope,
-    position: Number(match[2])
-  };
-}
-
-function calculatePickPoints(category, pick, result, actualPositionByScopeAndDriver) {
-  if (!pick || !result) return 0;
-
-  const exactText =
-    pick.value_text !== null &&
-    result.value_text !== null &&
-    pick.value_text === result.value_text;
-
-  const exactNumber =
-    pick.value_number !== null &&
-    result.value_number !== null &&
-    Number(pick.value_number) === Number(result.value_number);
-
-  if (exactText || exactNumber) {
-    return Number(category.exact_points || 0);
-  }
-
-  const meta = parsePositionCategoryMeta(category.name);
-  if (meta && pick.value_text !== null) {
-    const pickedDriver = String(pick.value_text || "").trim().toLowerCase();
-    const actualPosition = actualPositionByScopeAndDriver.get(`${meta.scope}:${pickedDriver}`);
-    if (Number.isInteger(actualPosition)) {
-      const step = Math.max(1, Number(category.partial_points) || 1);
-      const distance = Math.abs(actualPosition - meta.position);
-      return Math.max(0, Number(category.exact_points || 0) - distance * step);
-    }
-  }
-
-  if (isDriverOfWeekendCategory(category.name) && pick.value_number !== null && result.value_number !== null) {
-    const step = Math.max(1, Number(category.partial_points) || 1);
-    const distance = Math.abs(Number(result.value_number) - Number(pick.value_number));
-    return Math.max(0, Number(category.exact_points || 0) - distance * step);
-  }
-
-  return 0;
 }
 
 function isDriverSelectionCategory(category) {
@@ -196,7 +155,6 @@ router.post("/:raceId", authRequired, async (req, res) => {
 
   const categories = await PickCategory.find({ race: raceId }).select('name is_position_based metadata').lean().exec();
   const categoriesById = new Map(categories.map((row) => [String(row._id), row]));
-  const teamOfWeekendCategory = categories.find((row) => isTeamOfWeekendCategory(row.name));
   const normalizedPicks = normalizeSubmittedPicks(picks, categoriesById, mode);
 
   if (mode === "submit") {
@@ -229,9 +187,6 @@ router.post("/:raceId", authRequired, async (req, res) => {
   if (!availableLeagueIds.includes(requestedLeagueIdLocal)) return res.status(403).json({ error: 'You are not a member of the selected league for this race' });
 
   const targetLeagueIds = applyToAllLeagues ? availableLeagueIds : [requestedLeagueIdLocal];
-  const submittedByCategoryId = new Map(normalizedPicks.map((pick) => [pick.categoryId, pick]));
-  const selectedTeamOfWeekend = teamOfWeekendCategory ? String(submittedByCategoryId.get(String(teamOfWeekendCategory._id))?.valueText || '').trim().toLowerCase() : '';
-
   for (const pick of normalizedPicks) {
     const category = categoriesById.get(pick.categoryId);
     if (!category) return res.status(400).json({ error: `Invalid category for race: ${pick.categoryId}` });
@@ -246,16 +201,15 @@ router.post("/:raceId", authRequired, async (req, res) => {
       const selectedDriver = String(pick.valueText || '').trim().toLowerCase();
       if (!selectedDriver || !validDrivers.has(selectedDriver)) return res.status(400).json({ error: `Pick for '${category.name}' must be selected from the race driver list` });
     }
-    if (isTeamOfWeekendCategory(category.name)) {
-      const selectedTeam = String(pick.valueText || '').trim().toLowerCase();
-      if (!selectedTeam || !validTeams.has(selectedTeam)) return res.status(400).json({ error: `Pick for '${category.name}' must be selected from a valid race team` });
-    }
     const configuredTeam = getConfiguredTeamForCategory(category);
-    const effectiveTeam = configuredTeam || selectedTeamOfWeekend;
+    const effectiveTeam = configuredTeam;
     if (isTeamBattleDriverCategory(category.name) && effectiveTeam) {
       const selectedDriver = String(pick.valueText || '').trim().toLowerCase();
       const allowedTeamDrivers = new Set(driversRes.filter((row) => String(row.team_name || '').trim().toLowerCase() === effectiveTeam).map((row) => row.driver_name.toLowerCase()));
       if (!allowedTeamDrivers.has(selectedDriver)) return res.status(400).json({ error: 'Team Battle driver must belong to the selected Team of the Weekend' });
+    }
+    if ((isRaceTeamBattleCategory(category.name) || isSprintTeamBattleCategory(category.name)) && !effectiveTeam) {
+      return res.status(400).json({ error: `Category '${category.name}' must have a locked team configured by admin` });
     }
     if (isTeamBattleMarginCategory(category.name)) {
       const selectedBand = String(pick.valueText || '').trim();
@@ -316,21 +270,8 @@ router.get("/:raceId/reveal", authRequired, async (req, res) => {
 
   const results = await Result.find({ race: raceId }).lean().exec();
   const resultsByCategory = new Map(results.map((result) => [String(result.category), result]));
-  const actualPositionByScopeAndDriver = new Map();
-
-  allPicks.forEach((pick) => {
-    const category = pick.category;
-    if (!category) return;
-
-    const meta = parsePositionCategoryMeta(category.name);
-    if (!meta) return;
-
-    const official = resultsByCategory.get(String(category._id || category));
-    const driverName = String(official?.value_text || "").trim().toLowerCase();
-    if (!driverName) return;
-
-    actualPositionByScopeAndDriver.set(`${meta.scope}:${driverName}`, meta.position);
-  });
+  const categories = allPicks.map((pick) => pick.category).filter(Boolean);
+  const actualPositionByScopeAndDriver = buildActualPositionByScopeAndDriver(categories, resultsByCategory);
 
   const mapped = allPicks
     .filter((pick) => pick.user && pick.user.role !== 'admin')
@@ -344,7 +285,7 @@ router.get("/:raceId/reveal", authRequired, async (req, res) => {
         category_order: Number(category?.display_order || 0),
         value_text: pick.value_text,
         value_number: pick.value_number,
-        points: calculatePickPoints(category, pick, resultsByCategory.get(categoryId), actualPositionByScopeAndDriver)
+        points: calculateScorePoints(category, pick, resultsByCategory.get(categoryId), actualPositionByScopeAndDriver)
       };
     });
   return res.json({ leagueId: effectiveLeagueIdLocal, picks: mapped });

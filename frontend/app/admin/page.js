@@ -817,11 +817,18 @@ export default function AdminPage() {
     const sprintQualificationSlots = parseCsvLikeList(sprintQualificationSlotsInput)
       .map((value) => Number(value))
       .filter((value) => Number.isInteger(value) && value > 0);
+    const fixedTeamOfWeekend = String(predictionPreview.teamOfWeekend || "").trim();
+
+    if (selectedOptions.includes("teamOfWeekend") && !fixedTeamOfWeekend) {
+      setMessage("Select the fixed team for Team of the Weekend.");
+      return;
+    }
 
     const payload = {
       ...race,
       externalRound: race.externalRound ? Number(race.externalRound) : null,
       predictionOptions: selectedOptions,
+      fixedTeamOfWeekend,
       pointOverrides: Object.fromEntries(
         selectedOptions.map((optionKey) => [
           optionKey,
@@ -1229,7 +1236,7 @@ export default function AdminPage() {
 
       if (optionKey === "teamOfWeekend") {
         categories.push({
-          name: "Team Battle Winner (Driver)",
+          name: "Race Team Battle Winner (Driver)",
           displayOrder: displayOrder++,
           isPositionBased: false,
           metadata: { fixedTeam: fixedTeamOfWeekend },
@@ -1237,13 +1244,33 @@ export default function AdminPage() {
           partialPoints
         });
         categories.push({
-          name: "Team Battle Winning Margin",
+          name: "Race Team Battle Winning Margin",
           displayOrder: displayOrder++,
           isPositionBased: false,
           metadata: { fixedTeam: fixedTeamOfWeekend },
           exactPoints,
           partialPoints
         });
+
+        if (race.hasSprintWeekend) {
+          categories.push({
+            name: "Sprint Team Battle Winner (Driver)",
+            displayOrder: displayOrder++,
+            isPositionBased: false,
+            metadata: { fixedTeam: fixedTeamOfWeekend },
+            exactPoints,
+            partialPoints
+          });
+          categories.push({
+            name: "Sprint Team Battle Winning Margin",
+            displayOrder: displayOrder++,
+            isPositionBased: false,
+            metadata: { fixedTeam: fixedTeamOfWeekend },
+            exactPoints,
+            partialPoints
+          });
+        }
+
         return;
       }
 
@@ -1628,7 +1655,7 @@ export default function AdminPage() {
                               </option>
                             ))}
                           </select>
-                          <p className="mt-1 text-[11px] text-slate-400">Players will only pick the team driver and the gap for this team.</p>
+                          <p className="mt-1 text-[11px] text-slate-400">Admin locks the team. Players will then predict the teammate winner and margin for the race, and for the sprint too on sprint weekends.</p>
                         </div>
                       ) : null}
 

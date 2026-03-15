@@ -17,6 +17,14 @@ function isTeamOfWeekendCategory(name) {
   return String(name || "").toLowerCase().includes("team of the weekend");
 }
 
+function isRaceTeamBattleCategory(name) {
+  return String(name || "").toLowerCase().includes("race team battle");
+}
+
+function isSprintTeamBattleCategory(name) {
+  return String(name || "").toLowerCase().includes("sprint team battle");
+}
+
 function isTeamBattleDriverCategory(name) {
   const normalized = String(name || "").toLowerCase();
   return normalized.includes("team battle") && normalized.includes("driver");
@@ -140,24 +148,37 @@ function buildPredictionSections(categories) {
 
   const usedIds = new Set(positionSections.flatMap((section) => section.categories.map((category) => category.id)));
   const remaining = (categories || []).filter((category) => !usedIds.has(category.id));
-  const teamBattleCategories = remaining.filter((category) =>
-    isTeamBattleDriverCategory(category.name) || isTeamBattleMarginCategory(category.name) || isTeamOfWeekendCategory(category.name)
+  const raceTeamBattleCategories = remaining.filter((category) =>
+    isRaceTeamBattleCategory(category.name)
+  );
+  const sprintTeamBattleCategories = remaining.filter((category) =>
+    isSprintTeamBattleCategory(category.name)
   );
   const driverOfWeekendCategories = remaining.filter((category) => isDriverOfWeekendCategory(category.name));
   const featuredCategories = remaining.filter(
     (category) =>
-      !teamBattleCategories.some((item) => item.id === category.id) &&
+      !raceTeamBattleCategories.some((item) => item.id === category.id) &&
+      !sprintTeamBattleCategories.some((item) => item.id === category.id) &&
       !driverOfWeekendCategories.some((item) => item.id === category.id)
   );
 
   const sections = [...positionSections];
-  if (teamBattleCategories.length > 0) {
+  if (raceTeamBattleCategories.length > 0) {
     sections.push({
-      key: "team-battle",
-      title: "Team Of The Weekend",
-      description: "Make the team battle picks for the selected team.",
+      key: "race-team-battle",
+      title: "Race Team Battle",
+      description: "Predict the locked team's driver winner and finishing gap for the race.",
       layout: "stack",
-      categories: teamBattleCategories
+      categories: raceTeamBattleCategories
+    });
+  }
+  if (sprintTeamBattleCategories.length > 0) {
+    sections.push({
+      key: "sprint-team-battle",
+      title: "Sprint Team Battle",
+      description: "Predict the locked team's driver winner and finishing gap for the sprint.",
+      layout: "stack",
+      categories: sprintTeamBattleCategories
     });
   }
   if (driverOfWeekendCategories.length > 0) {
@@ -184,10 +205,8 @@ function buildPredictionSections(categories) {
 
 function getInputMeta(category, race, values) {
   const drivers = race?.drivers || [];
-  const categories = race?.categories || [];
   const configuredTeam = getConfiguredTeamForCategory(category);
-  const teamOfWeekendCategory = categories.find((item) => isTeamOfWeekendCategory(item.name));
-  const selectedTeam = configuredTeam || String(values?.[teamOfWeekendCategory?.id] || "").trim();
+  const selectedTeam = configuredTeam;
 
   if (isTeamBattleMarginCategory(category.name)) {
     return {
@@ -236,15 +255,6 @@ function getInputMeta(category, race, values) {
         label: driver.team_name ? `${driver.driver_name} (${driver.team_name})` : driver.driver_name
       })),
       hint: "Select a driver from the official race list."
-    };
-  }
-
-  if (isTeamOfWeekendCategory(category.name)) {
-    const teams = [...new Set(drivers.map((driver) => String(driver.team_name || "").trim()).filter(Boolean))];
-    return {
-      inputType: "teamSelect",
-      options: teams.map((team) => ({ value: team, label: team })),
-      hint: "Select one team for Team of the Weekend."
     };
   }
 
@@ -418,8 +428,7 @@ export default function PicksPage() {
   function renderCategoryField(category, compact = false) {
     const meta = getInputMeta(category, race, values);
     const configuredTeam = getConfiguredTeamForCategory(category);
-    const teamOfWeekendCategory = race.categories.find((item) => isTeamOfWeekendCategory(item.name));
-    const selectedTeam = configuredTeam || (teamOfWeekendCategory ? String(values[teamOfWeekendCategory.id] || "").trim() : "");
+    const selectedTeam = configuredTeam;
     const filteredDriverOptions = isTeamBattleDriverCategory(category.name) && selectedTeam
       ? (meta.options || []).filter((option) => option.label.includes(`(${selectedTeam})`))
       : meta.options;
@@ -459,20 +468,6 @@ export default function PicksPage() {
             onChange={(e) => setValues({ ...values, [category.id]: e.target.value })}
           >
             <option value="" className="bg-track-900 text-slate-300">Select position</option>
-            {meta.options.map((option) => (
-              <option key={option.value} value={option.value} className="bg-track-900 text-white">
-                {option.label}
-              </option>
-            ))}
-          </select>
-        ) : meta.inputType === "teamSelect" ? (
-          <select
-            className="tap w-full rounded-xl border border-white/30 bg-white/10 px-3 text-white"
-            value={values[category.id] || ""}
-            disabled={isEditingDisabled}
-            onChange={(e) => setValues({ ...values, [category.id]: e.target.value })}
-          >
-            <option value="" className="bg-track-900 text-slate-300">Select team</option>
             {meta.options.map((option) => (
               <option key={option.value} value={option.value} className="bg-track-900 text-white">
                 {option.label}

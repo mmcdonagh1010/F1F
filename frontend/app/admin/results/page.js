@@ -23,6 +23,10 @@ function isTeamBattleDriverCategory(name) {
   return normalized.includes("team battle") && normalized.includes("driver");
 }
 
+function isTeamBattleCategory(name) {
+  return String(name || "").toLowerCase().includes("team battle");
+}
+
 function isDriverSelectionCategory(category) {
   const normalized = category.name.toLowerCase();
   if (isTeamBattleMarginCategory(normalized)) return false;
@@ -340,8 +344,7 @@ export default function AdminResultsPage() {
 
           {raceDetail.categories.map((category) => {
             const meta = getResultInputMeta(category, raceDetail.drivers, raceDetail.categories, resultValues);
-            const teamOfWeekendCategory = raceDetail.categories.find((item) => isTeamOfWeekendCategory(item.name));
-            const selectedTeam = getConfiguredTeamForCategory(category) || (teamOfWeekendCategory ? String(resultValues[teamOfWeekendCategory.id] || "").trim() : "");
+            const selectedTeam = getConfiguredTeamForCategory(category);
             const filteredOptions = isTeamBattleDriverCategory(category.name) && selectedTeam
               ? (meta.options || []).filter((option) => option.label.includes(`(${selectedTeam})`))
               : meta.options;
@@ -358,6 +361,8 @@ export default function AdminResultsPage() {
                     <option value="" className="bg-track-900 text-slate-300">
                       {isTeamBattleDriverCategory(category.name) && selectedTeam
                         ? `Select driver from ${selectedTeam}`
+                        : isTeamBattleCategory(category.name) && !selectedTeam
+                        ? "Admin must lock a team first"
                         : meta.placeholder}
                     </option>
                     {(filteredOptions || []).map((option) => (

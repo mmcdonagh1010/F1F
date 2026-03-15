@@ -3,7 +3,9 @@ import Result from "../models/Result.js";
 import Pick from "../models/Pick.js";
 import Score from "../models/Score.js";
 
-function parsePositionCategoryMeta(categoryName) {
+const TEAM_MARGIN_BANDS = ["1-2", "3-4", "5+"];
+
+export function parsePositionCategoryMeta(categoryName) {
   const match = String(categoryName || "").match(/(race result|sprint result|race qualification|sprint qualification)\s*p(\d+)/i);
   if (!match) return null;
 
@@ -19,12 +21,123 @@ function parsePositionCategoryMeta(categoryName) {
   };
 }
 
-function getDriverOfWeekendScope(category) {
-  return String(category?.metadata?.driverOfWeekendScope || "").trim();
+export function isDriverOfWeekendCategory(category) {
+  return String(category?.name || "").toLowerCase().includes("driver of the weekend");
 }
 
-function isDriverOfWeekendCategory(category) {
-  return String(category?.name || "").toLowerCase().includes("driver of the weekend");
+export function isTeamBattleMarginCategory(category) {
+  const normalized = String(category?.name || category || "").toLowerCase();
+  return normalized.includes("team battle") && normalized.includes("margin");
+}
+
+export function formatEntryValue(entry) {
+  if (!entry) return null;
+  if (entry.value_text !== null && entry.value_text !== undefined && entry.value_text !== "") return entry.value_text;
+  if (entry.value_number !== null && entry.value_number !== undefined) return String(entry.value_number);
+  return null;
+}
+
+function getTeamMarginBandIndex(value) {
+  return TEAM_MARGIN_BANDS.indexOf(String(value || "").trim());
+}
+
+function calculateTeamMarginPoints(category, pick, result) {
+  const pickedBandIndex = getTeamMarginBandIndex(pick?.value_text);
+  const officialBandIndex = getTeamMarginBandIndex(result?.value_text);
+  if (pickedBandIndex < 0 || officialBandIndex < 0) return 0;
+
+  const bandDistance = Math.abs(pickedBandIndex - officialBandIndex);
+  const step = Math.max(1, Number(category.partial_points) || 1);
+  return Math.max(0, Number(category.exact_points || 0) - bandDistance * step);
+}
+
+export function buildActualPositionByScopeAndDriver(categories, resultsByCategory) {
+  const actualPositionByScopeAndDriver = new Map();
+
+  for (const category of categories || []) {
+    const meta = parsePositionCategoryMeta(category.name);
+    if (!meta) continue;
+
+    const official = resultsByCategory.get(String(category._id || category.id));
+    const driverName = String(official?.value_text || "").trim().toLowerCase();
+    if (!driverName) continue;
+
+    actualPositionByScopeAndDriver.set(`${meta.scope}:${driverName}`, meta.position);
+  }
+
+  return actualPositionByScopeAndDriver;
+}
+
+export function buildPickScoreDetail(category, pick, result, actualPositionByScopeAndDriver) {
+  const points = calculatePickPoints(category, pick, result, actualPositionByScopeAndDriver);
+  const detail = {
+    points,
+    pickValue: formatEntryValue(pick),
+    officialValue: formatEntryValue(result),
+    isPositionPrediction: false,
+    positionsAway: null,
+    targetPosition: null,
+    actualPickedPosition: null
+  };
+
+  const meta = parsePositionCategoryMeta(category?.name);
+  if (!meta || pick?.value_text === null || pick?.value_text === undefined) {
+    return detail;
+  }
+
+  const pickedDriver = String(pick.value_text || "").trim().toLowerCase();
+  const actualPosition = actualPositionByScopeAndDriver.get(`${meta.scope}:${pickedDriver}`);
+  detail.isPositionPrediction = true;
+  detail.targetPosition = meta.position;
+
+  if (Number.isInteger(actualPosition)) {
+    detail.actualPickedPosition = actualPosition;
+    detail.positionsAway = Math.abs(actualPosition - meta.position);
+  }
+
+  return detail;
+}
+
+export function calculatePickPoints(category, pick, result, actualPositionByScopeAndDriver = new Map()) {
+  if (!pick || !result || !category) return 0;
+
+  const exactText =
+    pick.value_text !== null &&
+    result.value_text !== null &&
+    pick.value_text === result.value_text;
+
+  const exactNumber =
+    pick.value_number !== null &&
+    result.value_number !== null &&
+    Number(pick.value_number) === Number(result.value_number);
+
+  if (exactText || exactNumber) {
+    return Number(category.exact_points || 0);
+  }
+
+  if (isTeamBattleMarginCategory(category)) {
+    return calculateTeamMarginPoints(category, pick, result);
+  }
+
+  const meta = parsePositionCategoryMeta(category.name);
+  if (meta && pick.value_text !== null) {
+    const pickedDriver = String(pick.value_text || "").trim().toLowerCase();
+    const actualPosition = actualPositionByScopeAndDriver.get(`${meta.scope}:${pickedDriver}`);
+
+    if (Number.isInteger(actualPosition)) {
+      const step = Math.max(1, Number(category.partial_points) || 1);
+      const distance = Math.abs(actualPosition - meta.position);
+      return Math.max(0, Number(category.exact_points || 0) - distance * step);
+    }
+  }
+
+  if (isDriverOfWeekendCategory(category) && pick.value_number !== null && result.value_number !== null) {
+    const step = Math.max(1, Number(category.partial_points) || 1);
+    const distance = Math.abs(Number(result.value_number) - Number(pick.value_number));
+    return Math.max(0, Number(category.exact_points || 0) - distance * step);
+  }
+
+  return 0;
 }
 
 export async function calculateRaceScores(raceId, targetLeagueId = null) {
@@ -34,20 +147,9 @@ export async function calculateRaceScores(raceId, targetLeagueId = null) {
   if (targetLeagueId) picksQuery.league = targetLeagueId;
   const picks = await Pick.find(picksQuery).lean().exec();
 
-  const resultsByCategory = new Map(results.map((r) => [String(r.category), r]));
-  const categoriesById = new Map(categories.map((c) => [String(c._id), c]));
-  const actualPositionByScopeAndDriver = new Map();
-
-  for (const category of categories) {
-    const meta = parsePositionCategoryMeta(category.name);
-    if (!meta) continue;
-
-    const official = resultsByCategory.get(String(category._id));
-    const driverName = String(official?.value_text || "").trim().toLowerCase();
-    if (!driverName) continue;
-
-    actualPositionByScopeAndDriver.set(`${meta.scope}:${driverName}`, meta.position);
-  }
+  const resultsByCategory = new Map(results.map((row) => [String(row.category), row]));
+  const categoriesById = new Map(categories.map((row) => [String(row._id), row]));
+  const actualPositionByScopeAndDriver = buildActualPositionByScopeAndDriver(categories, resultsByCategory);
 
   const leagueUserScoreMap = new Map();
 
@@ -56,30 +158,7 @@ export async function calculateRaceScores(raceId, targetLeagueId = null) {
     const official = resultsByCategory.get(String(pick.category));
     if (!category || !official) continue;
 
-    const exactText = pick.value_text && official.value_text && pick.value_text === official.value_text;
-    const exactNumber = pick.value_number !== null && official.value_number !== null && pick.value_number === official.value_number;
-
-    let earned = 0;
-
-    if (exactText || exactNumber) {
-      earned = Number(category.exact_points || 0);
-    } else {
-      const meta = parsePositionCategoryMeta(category.name);
-      if (meta && pick.value_text) {
-        const pickedDriver = String(pick.value_text).trim().toLowerCase();
-        const actualPosition = actualPositionByScopeAndDriver.get(`${meta.scope}:${pickedDriver}`);
-
-        if (Number.isInteger(actualPosition)) {
-          const step = Math.max(1, Number(category.partial_points) || 1);
-          const distance = Math.abs(actualPosition - meta.position);
-          earned = Math.max(0, Number(category.exact_points || 0) - distance * step);
-        }
-      } else if (isDriverOfWeekendCategory(category) && pick.value_number !== null && official.value_number !== null) {
-        const step = Math.max(1, Number(category.partial_points) || 1);
-        const distance = Math.abs(Number(official.value_number) - Number(pick.value_number));
-        earned = Math.max(0, Number(category.exact_points || 0) - distance * step);
-      }
-    }
+    const earned = calculatePickPoints(category, pick, official, actualPositionByScopeAndDriver);
 
     const leagueId = String(pick.league || '');
     const userId = String(pick.user);

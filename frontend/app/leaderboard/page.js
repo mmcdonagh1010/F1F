@@ -9,6 +9,14 @@ import { apiFetch } from "../../lib/api";
 
 const AUTO_REFRESH_MS = 15 * 60 * 1000;
 
+function formatPickedValue(detail) {
+  if (!detail?.pickValue) return "-";
+  if (detail.isPositionPrediction && detail.actualPickedPosition) {
+    return `${detail.pickValue} [P${detail.actualPickedPosition}]`;
+  }
+  return detail.pickValue;
+}
+
 function LeaderboardPageContent() {
   const router = useRouter();
   const pathname = usePathname();
@@ -33,6 +41,29 @@ function LeaderboardPageContent() {
   const [latestCategories, setLatestCategories] = useState([]);
   const [latestRows, setLatestRows] = useState([]);
   const [selectedRaceId, setSelectedRaceId] = useState(searchRaceId);
+  const [activeCellDetail, setActiveCellDetail] = useState(null);
+
+  function buildCellDetailText(categoryName, detail) {
+    if (!detail) return `${categoryName}: no pick detail available yet`;
+
+    const parts = [
+      `${categoryName}: picked ${formatPickedValue(detail)}`,
+      `Official ${detail.officialValue || "Not scored yet"}`,
+      `Awarded ${detail.points || 0} points`
+    ];
+
+    if (detail.isPositionPrediction && detail.positionsAway !== null) {
+      const awayText = detail.positionsAway === 0
+        ? "Exact position"
+        : `${detail.positionsAway} position${detail.positionsAway === 1 ? "" : "s"} away`;
+      parts.push(awayText);
+      if (detail.actualPickedPosition) {
+        parts.push(`Picked driver actually finished P${detail.actualPickedPosition}`);
+      }
+    }
+
+    return parts.join("; ");
+  }
 
   function replaceUrl(nextValues) {
     const params = new URLSearchParams(searchParams.toString());
@@ -114,6 +145,10 @@ function LeaderboardPageContent() {
     if (searchBoardMode !== boardMode) setBoardMode(searchBoardMode);
     if (searchRaceId !== selectedRaceId) setSelectedRaceId(searchRaceId);
   }, [searchYear, searchLeagueId, searchBoardMode, searchRaceId]);
+
+  useEffect(() => {
+    setActiveCellDetail(null);
+  }, [boardMode, selectedRaceId, leagueId, year]);
 
   useEffect(() => {
     replaceUrl({ year, leagueId, boardMode, raceId: selectedRaceId });
@@ -263,6 +298,23 @@ function LeaderboardPageContent() {
           ) : (
             <p className="px-2 pb-2 text-xs text-slate-400">No synced race weekend results available for {year}.</p>
           )}
+          {activeCellDetail ? (
+            <div className="mx-2 mb-3 rounded-2xl border border-accent-cyan/30 bg-accent-cyan/10 p-3 text-sm text-slate-100">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="font-semibold text-accent-cyan">{activeCellDetail.title}</p>
+                  <p className="mt-1 text-xs text-slate-300">{activeCellDetail.description}</p>
+                </div>
+                <button
+                  type="button"
+                  className="tap rounded-full border border-white/20 px-2 py-1 text-xs text-slate-200"
+                  onClick={() => setActiveCellDetail(null)}
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+          ) : null}
           {latestRace ? (
             <table className="min-w-[760px] text-sm text-slate-100">
               <thead>
@@ -288,16 +340,30 @@ function LeaderboardPageContent() {
                     </td>
                     <td className="px-2 py-3 font-bold text-accent-gold">{row.raceTotal}</td>
                     {latestCategories.map((category) => {
-                      const points = row.categoryPoints?.[category.id] ?? 0;
-                      const pickedValue = row.categoryPicks?.[category.id] || "-";
-                      const officialValue = category.officialValue || "Not scored yet";
+                      const detail = row.categoryDetails?.[category.id] || {
+                        pickValue: row.categoryPicks?.[category.id] || "-",
+                        officialValue: category.officialValue || "Not scored yet",
+                        points: row.categoryPoints?.[category.id] ?? 0
+                      };
+                      const points = detail.points ?? 0;
+                      const detailText = buildCellDetailText(category.name, detail);
                       return (
                         <td
                           key={`${row.id}:${category.id}`}
                           className="px-2 py-3"
-                          title={`${category.name}: picked ${pickedValue}; official ${officialValue}; awarded ${points} points`}
                         >
-                          {points}
+                          <button
+                            type="button"
+                            className="tap rounded-lg px-2 py-1 text-left text-inherit underline decoration-dotted underline-offset-2"
+                            title={detailText}
+                            aria-label={detailText}
+                            onClick={() => setActiveCellDetail({
+                              title: `${row.name} · ${category.name}`,
+                              description: detailText
+                            })}
+                          >
+                            {points}
+                          </button>
                         </td>
                       );
                     })}
