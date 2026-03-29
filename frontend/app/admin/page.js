@@ -1303,7 +1303,7 @@ export default function AdminPage() {
     });
 
     try {
-      await apiFetch(`/admin/races/${predictionRaceId}/categories`, {
+      const response = await apiFetch(`/admin/races/${predictionRaceId}/categories`, {
         method: "POST",
         body: JSON.stringify({ categories })
       });
@@ -1312,7 +1312,11 @@ export default function AdminPage() {
           method: "PATCH",
           body: JSON.stringify({ predictionsLive: true })
         });
-        setPredictionMessage("Prediction options saved and predictions are now live for this race.");
+        setPredictionMessage(
+          response?.rescored
+            ? "Prediction options saved, existing player picks were preserved, and leaderboard scores were recalculated."
+            : "Prediction options saved and predictions are now live for this race."
+        );
       } else {
         setPredictionMessage("No prediction options selected. The race has been hidden and predictions remain closed.");
       }

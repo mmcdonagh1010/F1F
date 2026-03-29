@@ -1363,11 +1363,12 @@ router.post("/races/:raceId/categories", async (req, res) => {
   try {
     const { connectMongo } = await import("../mongo.js");
     const PickCategory = (await import("../models/PickCategory.js")).default;
+    const Pick = (await import("../models/Pick.js")).default;
+    const Result = (await import("../models/Result.js")).default;
     const Race = (await import("../models/Race.js")).default;
     await connectMongo();
 
-    await PickCategory.deleteMany({ race: raceId }).exec();
-    const docs = categories.map((category) => ({
+    const docs = (Array.isArray(categories) ? categories : []).map((category) => ({
       race: raceId,
       name: category.name,
       display_order: category.displayOrder,
@@ -1376,7 +1377,55 @@ router.post("/races/:raceId/categories", async (req, res) => {
       exact_points: category.exactPoints || 0,
       partial_points: category.partialPoints || 0
     }));
-    if (docs.length) await PickCategory.insertMany(docs);
+
+    const existingCategories = await PickCategory.find({ race: raceId }).lean().exec();
+    const existingByName = new Map(existingCategories.map((category) => [String(category.name), category]));
+    const nextNames = new Set(docs.map((category) => String(category.name)));
+    const categoriesToRemove = existingCategories.filter((category) => !nextNames.has(String(category.name)));
+
+    if (categoriesToRemove.length > 0) {
+      const removableIds = categoriesToRemove.map((category) => category._id);
+      const removableIdStrings = categoriesToRemove.map((category) => String(category._id));
+      const [linkedPick, linkedResult] = await Promise.all([
+        Pick.exists({ race: raceId, category: { $in: removableIds } }).exec(),
+        Result.exists({ race: raceId, category: { $in: removableIdStrings } }).exec()
+      ]);
+
+      if (linkedPick || linkedResult) {
+        return res.status(400).json({
+          error: "Cannot remove or rename prediction categories after players have saved picks or results exist. You can still update the points for the existing categories."
+        });
+      }
+    }
+
+    const operations = docs.map(async (category) => {
+      const existing = existingByName.get(String(category.name));
+      if (existing) {
+        await PickCategory.updateOne(
+          { _id: existing._id },
+          {
+            $set: {
+              display_order: category.display_order,
+              is_position_based: category.is_position_based,
+              metadata: category.metadata,
+              exact_points: category.exact_points,
+              partial_points: category.partial_points
+            }
+          }
+        ).exec();
+        return existing._id;
+      }
+
+      const created = await PickCategory.create(category);
+      return created._id;
+    });
+
+    await Promise.all(operations);
+
+    if (categoriesToRemove.length > 0) {
+      await PickCategory.deleteMany({ _id: { $in: categoriesToRemove.map((category) => category._id) } }).exec();
+    }
+
     const race = await Race.findById(raceId).lean().exec();
     if (!race) return res.status(404).json({ error: "Race not found" });
 
@@ -1391,7 +1440,18 @@ router.post("/races/:raceId/categories", async (req, res) => {
         }
       }
     ).exec();
-    return res.json({ message: "Categories updated" });
+
+    const hasResults = await Result.exists({ race: raceId }).exec();
+    let rescored = false;
+    if (hasResults) {
+      await calculateRaceScores(raceId);
+      rescored = true;
+    }
+
+    return res.json({
+      message: rescored ? "Categories updated and scores recalculated" : "Categories updated",
+      rescored
+    });
   } catch (err) {
     console.error('Update categories failed', err);
     return res.status(500).json({ error: 'Failed to update categories' });
