@@ -55,6 +55,24 @@ const OPTION_CATEGORY_NAMES = {
   fastestLapDriver: "Fastest Lap Driver"
 };
 
+const DEFAULT_POSITION_SLOTS_INPUT = "1,2,3";
+const EMPTY_PREDICTION_PREVIEW = {
+  driverOfWeekend: "",
+  teamOfWeekend: ""
+};
+
+function buildDefaultOptionPoints() {
+  return Object.fromEntries(
+    PREDICTION_OPTIONS.map((option) => [
+      option.key,
+      {
+        exactPoints: option.defaultExactPoints,
+        partialPoints: option.defaultPartialPoints
+      }
+    ])
+  );
+}
+
 function parseCsvLikeList(text) {
   return text
     .split(/[;,]/)
@@ -328,6 +346,20 @@ function hasSprintCategories(categories) {
   });
 }
 
+function formatPredictionCategoryMetadata(category) {
+  const parts = [];
+  if (category?.metadata?.fixedTeam) {
+    parts.push(`Fixed team: ${String(category.metadata.fixedTeam).trim()}`);
+  }
+  if (category?.metadata?.fixedDriver) {
+    parts.push(`Fixed driver: ${String(category.metadata.fixedDriver).trim()}`);
+  }
+  if (category?.metadata?.driverOfWeekendScope) {
+    parts.push(`Scope: ${getDriverOfWeekendScopeLabel(category.metadata.driverOfWeekendScope)}`);
+  }
+  return parts.join(" • ");
+}
+
 export default function AdminPage() {
   const router = useRouter();
   const currentYear = new Date().getUTCFullYear();
@@ -358,26 +390,14 @@ export default function AdminPage() {
     hasSprintWeekend: false
   });
   const [selectedOptions, setSelectedOptions] = useState([]);
-  const [optionPoints, setOptionPoints] = useState(() =>
-    Object.fromEntries(
-      PREDICTION_OPTIONS.map((option) => [
-        option.key,
-        {
-          exactPoints: option.defaultExactPoints,
-          partialPoints: option.defaultPartialPoints
-        }
-      ])
-    )
-  );
-  const [racePositionSlotsInput, setRacePositionSlotsInput] = useState("1,2,3");
-  const [sprintPositionSlotsInput, setSprintPositionSlotsInput] = useState("1,2,3");
-  const [raceQualificationSlotsInput, setRaceQualificationSlotsInput] = useState("1,2,3");
-  const [sprintQualificationSlotsInput, setSprintQualificationSlotsInput] = useState("1,2,3");
-  const [predictionPreview, setPredictionPreview] = useState({
-    driverOfWeekend: "",
-    teamOfWeekend: ""
-  });
+  const [optionPoints, setOptionPoints] = useState(() => buildDefaultOptionPoints());
+  const [racePositionSlotsInput, setRacePositionSlotsInput] = useState(DEFAULT_POSITION_SLOTS_INPUT);
+  const [sprintPositionSlotsInput, setSprintPositionSlotsInput] = useState(DEFAULT_POSITION_SLOTS_INPUT);
+  const [raceQualificationSlotsInput, setRaceQualificationSlotsInput] = useState(DEFAULT_POSITION_SLOTS_INPUT);
+  const [sprintQualificationSlotsInput, setSprintQualificationSlotsInput] = useState(DEFAULT_POSITION_SLOTS_INPUT);
+  const [predictionPreview, setPredictionPreview] = useState(EMPTY_PREDICTION_PREVIEW);
   const [predictionYear, setPredictionYear] = useState(String(currentYear));
+  const [predictionRaceScope, setPredictionRaceScope] = useState("upcoming");
   const [users, setUsers] = useState([]);
   const [editingUserId, setEditingUserId] = useState(null);
   const [editingUserForm, setEditingUserForm] = useState({ name: "", email: "" });
@@ -455,10 +475,20 @@ export default function AdminPage() {
     const now = Date.now();
     return allRaces
       .filter((raceRow) => new Date(raceRow.race_date).getUTCFullYear() === Number(predictionYear))
-      .filter((raceRow) => raceRow.status !== "completed")
-      .filter((raceRow) => new Date(raceRow.race_date).getTime() > now)
-      .sort((a, b) => new Date(a.race_date).getTime() - new Date(b.race_date).getTime());
-  }, [allRaces, predictionYear]);
+      .filter((raceRow) => {
+        const raceAt = new Date(raceRow.race_date).getTime();
+        const isHistorical = raceRow.has_results || raceRow.status === "completed" || (Number.isFinite(raceAt) && raceAt <= now);
+        if (predictionRaceScope === "previous") return isHistorical;
+        if (predictionRaceScope === "all") return true;
+        return !isHistorical;
+      })
+      .sort((a, b) => {
+        const leftTime = new Date(a.race_date).getTime();
+        const rightTime = new Date(b.race_date).getTime();
+        if (predictionRaceScope === "previous") return rightTime - leftTime;
+        return leftTime - rightTime;
+      });
+  }, [allRaces, predictionYear, predictionRaceScope]);
 
   const mediaOptions = useMemo(() => {
     if (mediaType === "drivers") {
@@ -583,12 +613,26 @@ export default function AdminPage() {
   async function loadPredictionRaceDetail(raceId) {
     if (!raceId) {
       setPredictionRaceDetail(null);
+      setSelectedOptions([]);
+      setOptionPoints(buildDefaultOptionPoints());
+      setRacePositionSlotsInput(DEFAULT_POSITION_SLOTS_INPUT);
+      setSprintPositionSlotsInput(DEFAULT_POSITION_SLOTS_INPUT);
+      setRaceQualificationSlotsInput(DEFAULT_POSITION_SLOTS_INPUT);
+      setSprintQualificationSlotsInput(DEFAULT_POSITION_SLOTS_INPUT);
+      setPredictionPreview(EMPTY_PREDICTION_PREVIEW);
       return;
     }
 
     try {
       const detail = await apiFetch(`/races/${raceId}`);
       setPredictionRaceDetail(detail);
+      setSelectedOptions([]);
+      setOptionPoints(buildDefaultOptionPoints());
+      setRacePositionSlotsInput(DEFAULT_POSITION_SLOTS_INPUT);
+      setSprintPositionSlotsInput(DEFAULT_POSITION_SLOTS_INPUT);
+      setRaceQualificationSlotsInput(DEFAULT_POSITION_SLOTS_INPUT);
+      setSprintQualificationSlotsInput(DEFAULT_POSITION_SLOTS_INPUT);
+      setPredictionPreview(EMPTY_PREDICTION_PREVIEW);
       const selected = new Set();
       const pointsByOption = {};
       const raceSlots = [];
@@ -628,7 +672,7 @@ export default function AdminPage() {
       });
 
       setSelectedOptions(Array.from(selected));
-      setOptionPoints((prev) => ({ ...prev, ...pointsByOption }));
+    setOptionPoints({ ...buildDefaultOptionPoints(), ...pointsByOption });
       if (raceSlots.length > 0) setRacePositionSlotsInput(raceSlots.sort((a, b) => a - b).join(","));
       if (sprintSlots.length > 0) setSprintPositionSlotsInput(sprintSlots.sort((a, b) => a - b).join(","));
       if (raceQualificationSlots.length > 0) {
@@ -649,6 +693,13 @@ export default function AdminPage() {
       setRace((prev) => ({ ...prev, hasSprintWeekend: hasSprint }));
     } catch {
       setPredictionRaceDetail(null);
+      setSelectedOptions([]);
+      setOptionPoints(buildDefaultOptionPoints());
+      setRacePositionSlotsInput(DEFAULT_POSITION_SLOTS_INPUT);
+      setSprintPositionSlotsInput(DEFAULT_POSITION_SLOTS_INPUT);
+      setRaceQualificationSlotsInput(DEFAULT_POSITION_SLOTS_INPUT);
+      setSprintQualificationSlotsInput(DEFAULT_POSITION_SLOTS_INPUT);
+      setPredictionPreview(EMPTY_PREDICTION_PREVIEW);
     }
   }
 
@@ -735,6 +786,13 @@ export default function AdminPage() {
     if (selectablePredictionRaces.length === 0) {
       setPredictionRaceId("");
       setPredictionRaceDetail(null);
+      setSelectedOptions([]);
+      setOptionPoints(buildDefaultOptionPoints());
+      setRacePositionSlotsInput(DEFAULT_POSITION_SLOTS_INPUT);
+      setSprintPositionSlotsInput(DEFAULT_POSITION_SLOTS_INPUT);
+      setRaceQualificationSlotsInput(DEFAULT_POSITION_SLOTS_INPUT);
+      setSprintQualificationSlotsInput(DEFAULT_POSITION_SLOTS_INPUT);
+      setPredictionPreview(EMPTY_PREDICTION_PREVIEW);
       return;
     }
 
@@ -1706,11 +1764,11 @@ export default function AdminPage() {
       {activeTab === "predictionOptions" ? (
         <section className="card space-y-3 p-4 text-sm text-slate-200">
           <h2 className="font-display text-2xl text-accent-cyan">Prediction Options</h2>
-          <p>Choose prediction categories and points for a specific upcoming race.</p>
+          <p>Choose prediction categories and points for any race in the selected year, including previous rounds that may need point-only updates or rescoring.</p>
 
           <div className="rounded-xl border border-white/20 bg-white/5 p-3">
             <p className="font-semibold text-slate-100">Applied To Race (Year Scoped)</p>
-            <div className="mt-2 grid grid-cols-1 gap-2 md:grid-cols-2">
+            <div className="mt-2 grid grid-cols-1 gap-2 md:grid-cols-3">
               <label className="text-xs text-slate-300">
                 Year
                 <select
@@ -1727,18 +1785,31 @@ export default function AdminPage() {
               </label>
 
               <label className="text-xs text-slate-300">
-                Future / Incomplete Race
+                Race View
+                <select
+                  className="mt-1 w-full rounded-xl border border-white/30 bg-white/10 px-3 py-2 text-white"
+                  value={predictionRaceScope}
+                  onChange={(e) => setPredictionRaceScope(e.target.value)}
+                >
+                  <option value="upcoming" className="bg-track-900 text-white">Upcoming only</option>
+                  <option value="previous" className="bg-track-900 text-white">Previous / completed only</option>
+                  <option value="all" className="bg-track-900 text-white">All races</option>
+                </select>
+              </label>
+
+              <label className="text-xs text-slate-300">
+                Race
                 <select
                   className="mt-1 w-full rounded-xl border border-white/30 bg-white/10 px-3 py-2 text-white"
                   value={predictionRaceId}
                   onChange={(e) => setPredictionRaceId(e.target.value)}
                 >
                   {selectablePredictionRaces.length === 0 ? (
-                    <option value="" className="bg-track-900 text-slate-300">No upcoming races for selected year</option>
+                    <option value="" className="bg-track-900 text-slate-300">No races match the selected year and view</option>
                   ) : null}
                   {selectablePredictionRaces.map((raceRow) => (
                     <option key={raceRow.id} value={raceRow.id} className="bg-track-900 text-white">
-                      {raceRow.name} - {new Date(raceRow.race_date).toLocaleDateString()}
+                      {raceRow.name} - {new Date(raceRow.race_date).toLocaleDateString()} {raceRow.has_results || raceRow.status === "completed" ? "• Previous" : "• Upcoming"}
                     </option>
                   ))}
                 </select>
@@ -1851,7 +1922,7 @@ export default function AdminPage() {
           </div>
 
           {predictionRaceDetail ? (
-            <div className="rounded-xl border border-white/20 bg-white/5 p-3">
+            <div className="space-y-3 rounded-xl border border-white/20 bg-white/5 p-3">
               <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                 <div>
                   <p className="font-semibold text-slate-100">Race Access</p>
@@ -1882,6 +1953,40 @@ export default function AdminPage() {
                     {predictionRaceDetail.is_visible ? "Hide Race" : "Show Race"}
                   </button>
                 </div>
+              </div>
+
+              {predictionRaceDetail.is_locked || predictionRaceDetail.has_results ? (
+                <p className="rounded-lg border border-amber-300/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
+                  This race is locked or already has results. You can safely update points on existing categories and the leaderboard will rescore automatically. Removing or renaming saved categories will be blocked once picks or results exist.
+                </p>
+              ) : null}
+
+              <div className="rounded-lg border border-white/10 bg-track-900/30 p-3">
+                <div className="flex flex-col gap-1 md:flex-row md:items-center md:justify-between">
+                  <p className="font-semibold text-slate-100">Saved Prediction Categories</p>
+                  <p className="text-xs text-slate-400">{predictionRaceDetail.categories?.length || 0} configured</p>
+                </div>
+                {predictionRaceDetail.categories?.length ? (
+                  <div className="mt-3 space-y-2 max-h-72 overflow-y-auto">
+                    {predictionRaceDetail.categories.map((category) => {
+                      const metadataSummary = formatPredictionCategoryMetadata(category);
+                      return (
+                        <div key={category.id} className="rounded-lg border border-white/10 bg-white/5 px-3 py-2">
+                          <div className="flex flex-col gap-1 md:flex-row md:items-center md:justify-between">
+                            <p className="font-medium text-slate-100">{category.name}</p>
+                            <p className="text-xs text-slate-400">Exact {Number(category.exact_points || 0)} • Partial {Number(category.partial_points || 0)}</p>
+                          </div>
+                          <p className="mt-1 text-[11px] text-slate-400">
+                            Order {Number(category.display_order || 0)} • {category.is_position_based ? "Position based" : "Direct pick"}
+                            {metadataSummary ? ` • ${metadataSummary}` : ""}
+                          </p>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <p className="mt-3 text-xs text-slate-400">No prediction options are saved for this race yet.</p>
+                )}
               </div>
             </div>
           ) : null}
