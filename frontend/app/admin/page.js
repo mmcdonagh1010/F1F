@@ -82,6 +82,27 @@ const PREDICTION_CONFIG_CSV_HEADERS = [
 ];
 const PREDICTION_IMPORT_REQUIRED_JSON_HINT = 'Required JSON shape: { "year": 2026, "races": [{ "raceId": "...", "name": "Australian Grand Prix", "raceDate": "2026-03-08T04:00:00.000Z", "deadlineAt": "2026-03-08T03:00:00.000Z", "categories": [{ "name": "Race Result P1", "displayOrder": 1, "isPositionBased": true, "exactPoints": 5, "partialPoints": 1, "metadata": {} }] }] }';
 const PREDICTION_IMPORT_REQUIRED_CSV_HINT = `Required CSV columns: ${PREDICTION_CONFIG_CSV_HEADERS.join(", ")}. Use the exported prediction CSV template and keep one row per category, or one blank category row when a race has no configured categories.`;
+const USER_IMPORT_CSV_HEADERS = ["id", "name", "email", "role", "emailVerified", "createdAt", "password"];
+const USER_IMPORT_REQUIRED_JSON_HINT = 'Required JSON shape: { "users": [{ "id": "optional-existing-user-id", "name": "Driver Fan", "email": "fan@example.com", "role": "player", "emailVerified": true, "password": "optional-new-password" }] }';
+const USER_IMPORT_REQUIRED_CSV_HINT = `Required CSV columns: ${USER_IMPORT_CSV_HEADERS.join(", ")}. Leave password blank to preserve an existing user's password, but provide it when importing a new user.`;
+const USER_PREDICTION_CSV_HEADERS = [
+  "userId",
+  "userEmail",
+  "userName",
+  "leagueId",
+  "leagueName",
+  "raceId",
+  "raceName",
+  "raceDate",
+  "deadlineAt",
+  "pickStatus",
+  "submittedAt",
+  "categoryName",
+  "pickValueText",
+  "pickValueNumber"
+];
+const USER_PREDICTION_IMPORT_REQUIRED_JSON_HINT = 'Required JSON shape: { "userId": "...", "year": 2026, "races": [{ "raceId": "...", "leagueId": "...", "pickStatus": "submitted", "submittedAt": "2026-03-01T10:00:00.000Z", "picks": [{ "categoryName": "Race Result P1", "valueText": "Max Verstappen", "valueNumber": null }] }] }';
+const USER_PREDICTION_IMPORT_REQUIRED_CSV_HINT = `Required CSV columns: ${USER_PREDICTION_CSV_HEADERS.join(", ")}. Keep one row per pick, and repeat the race and league columns for each row.`;
 
 function buildDefaultOptionPoints() {
   return Object.fromEntries(
@@ -177,6 +198,10 @@ function parseCsvObjectsWithLineNumbers(text) {
 }
 
 function buildPredictionImportError(message, hint) {
+  return new Error(hint ? `${message} ${hint}` : message);
+}
+
+function buildUserImportError(message, hint = USER_IMPORT_REQUIRED_CSV_HINT) {
   return new Error(hint ? `${message} ${hint}` : message);
 }
 
@@ -405,6 +430,282 @@ function normalizePredictionJsonPayload(parsed, fallbackYear) {
             metadata: category?.metadata || {}
           };
         })
+      };
+    })
+  };
+}
+
+function buildUsersExportCsv(payload) {
+  const rows = [USER_IMPORT_CSV_HEADERS.join(",")];
+  (payload?.users || []).forEach((user) => {
+    rows.push([
+      user.id || "",
+      user.name || "",
+      user.email || "",
+      user.role || "player",
+      user.emailVerified,
+      user.created_at || user.createdAt || "",
+      user.password || ""
+    ].map(escapeCsvValue).join(","));
+  });
+  return rows.join("\n");
+}
+
+function buildUserPredictionImportError(message, hint = USER_PREDICTION_IMPORT_REQUIRED_CSV_HINT) {
+  return new Error(hint ? `${message} ${hint}` : message);
+}
+
+function buildUserPredictionsExportCsv(payload) {
+  const rows = [USER_PREDICTION_CSV_HEADERS.join(",")];
+  (payload?.races || []).forEach((entry) => {
+    const pickRows = Array.isArray(entry.picks) && entry.picks.length > 0 ? entry.picks : [null];
+    pickRows.forEach((pick) => {
+      rows.push([
+        payload?.user?.id || "",
+        payload?.user?.email || "",
+        payload?.user?.name || "",
+        entry.leagueId || "",
+        entry.leagueName || "",
+        entry.raceId || "",
+        entry.raceName || "",
+        entry.raceDate || "",
+        entry.deadlineAt || "",
+        entry.pickStatus || "submitted",
+        entry.submittedAt || "",
+        pick?.categoryName || "",
+        pick?.valueText || "",
+        pick?.valueNumber ?? ""
+      ].map(escapeCsvValue).join(","));
+    });
+  });
+  return rows.join("\n");
+}
+
+function normalizeUserPredictionJsonPayload(parsed, fallbackUserId, fallbackYear) {
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw buildUserPredictionImportError("User prediction import JSON must be an object.", USER_PREDICTION_IMPORT_REQUIRED_JSON_HINT);
+  }
+
+  const userId = String(parsed.userId || parsed?.user?.id || fallbackUserId || "").trim();
+  const year = Number(parsed.year || fallbackYear);
+  if (!userId) {
+    throw buildUserPredictionImportError("User prediction import JSON must include userId.", USER_PREDICTION_IMPORT_REQUIRED_JSON_HINT);
+  }
+  if (!Number.isInteger(year) || year < 1950 || year > 2100) {
+    throw buildUserPredictionImportError("User prediction import JSON must include a valid year.", USER_PREDICTION_IMPORT_REQUIRED_JSON_HINT);
+  }
+  if (!Array.isArray(parsed.races) || parsed.races.length === 0) {
+    throw buildUserPredictionImportError("User prediction import JSON must include a non-empty 'races' array.", USER_PREDICTION_IMPORT_REQUIRED_JSON_HINT);
+  }
+
+  return {
+    userId,
+    year,
+    races: parsed.races.map((entry, index) => {
+      const location = `JSON races[${index}]`;
+      const raceId = String(entry?.raceId || "").trim();
+      const leagueId = String(entry?.leagueId || "").trim();
+      const pickStatus = String(entry?.pickStatus || "submitted").trim().toLowerCase();
+      if (!raceId) throw buildUserPredictionImportError(`${location}: 'raceId' is required.`, USER_PREDICTION_IMPORT_REQUIRED_JSON_HINT);
+      if (!leagueId) throw buildUserPredictionImportError(`${location}: 'leagueId' is required.`, USER_PREDICTION_IMPORT_REQUIRED_JSON_HINT);
+      if (!["draft", "submitted", "empty"].includes(pickStatus)) {
+        throw buildUserPredictionImportError(`${location}: 'pickStatus' must be draft, submitted, or empty.`, USER_PREDICTION_IMPORT_REQUIRED_JSON_HINT);
+      }
+      if (!Array.isArray(entry?.picks)) {
+        throw buildUserPredictionImportError(`${location}: 'picks' must be an array.`, USER_PREDICTION_IMPORT_REQUIRED_JSON_HINT);
+      }
+      return {
+        raceId,
+        raceName: String(entry?.raceName || "").trim() || undefined,
+        raceDate: entry?.raceDate || null,
+        deadlineAt: entry?.deadlineAt || null,
+        leagueId,
+        leagueName: String(entry?.leagueName || "").trim() || undefined,
+        pickStatus,
+        submittedAt: entry?.submittedAt || null,
+        picks: entry.picks.map((pick, pickIndex) => {
+          const pickLocation = `${location}.picks[${pickIndex}]`;
+          const categoryName = String(pick?.categoryName || "").trim();
+          if (!categoryName) {
+            throw buildUserPredictionImportError(`${pickLocation}: 'categoryName' is required.`, USER_PREDICTION_IMPORT_REQUIRED_JSON_HINT);
+          }
+          return {
+            categoryName,
+            valueText: pick?.valueText ?? null,
+            valueNumber: pick?.valueNumber ?? null
+          };
+        })
+      };
+    })
+  };
+}
+
+function parseUserPredictionsCsvPayload(text, fallbackUserId, fallbackYear) {
+  const { headers, rows } = parseCsvObjectsWithLineNumbers(text);
+  if (headers.length === 0 || rows.length === 0) {
+    throw buildUserPredictionImportError("User prediction CSV import must include a header row and at least one data row.");
+  }
+
+  const missingHeaders = USER_PREDICTION_CSV_HEADERS.filter((header) => !headers.includes(header));
+  if (missingHeaders.length > 0) {
+    throw buildUserPredictionImportError(`User prediction CSV import is missing required columns: ${missingHeaders.join(", ")}.`);
+  }
+
+  const grouped = new Map();
+  const years = new Set();
+  let resolvedUserId = String(fallbackUserId || "").trim();
+
+  rows.forEach(({ lineNumber, row }) => {
+    const location = `CSV row ${lineNumber}`;
+    const userId = String(row.userId || resolvedUserId || "").trim();
+    const raceId = String(row.raceId || "").trim();
+    const leagueId = String(row.leagueId || "").trim();
+    const categoryName = String(row.categoryName || "").trim();
+    const pickStatus = String(row.pickStatus || "submitted").trim().toLowerCase();
+    const raceDate = row.raceDate ? parseStrictDate(row.raceDate, "raceDate", location) : null;
+    const deadlineAt = row.deadlineAt ? parseStrictDate(row.deadlineAt, "deadlineAt", location) : null;
+
+    if (!userId) throw buildUserPredictionImportError(`${location}: 'userId' is required.`);
+    if (!raceId) throw buildUserPredictionImportError(`${location}: 'raceId' is required.`);
+    if (!leagueId) throw buildUserPredictionImportError(`${location}: 'leagueId' is required.`);
+    if (!["draft", "submitted", "empty"].includes(pickStatus)) {
+      throw buildUserPredictionImportError(`${location}: 'pickStatus' must be draft, submitted, or empty.`);
+    }
+    if (!categoryName) {
+      throw buildUserPredictionImportError(`${location}: 'categoryName' is required.`);
+    }
+
+    resolvedUserId = userId;
+    if (raceDate) years.add(new Date(raceDate).getUTCFullYear());
+    const key = `${raceId}:${leagueId}`;
+    const current = grouped.get(key) || {
+      raceId,
+      raceName: String(row.raceName || "").trim() || undefined,
+      raceDate,
+      deadlineAt,
+      leagueId,
+      leagueName: String(row.leagueName || "").trim() || undefined,
+      pickStatus,
+      submittedAt: row.submittedAt || null,
+      picks: []
+    };
+    current.picks.push({
+      categoryName,
+      valueText: String(row.pickValueText || "").trim() || null,
+      valueNumber: row.pickValueNumber === "" ? null : Number(row.pickValueNumber)
+    });
+    grouped.set(key, current);
+  });
+
+  const year = years.size === 1 ? Array.from(years)[0] : Number(fallbackYear);
+  if (!resolvedUserId) {
+    throw buildUserPredictionImportError("User prediction CSV import must resolve a userId.");
+  }
+  if (!Number.isInteger(year) || year < 1950 || year > 2100) {
+    throw buildUserPredictionImportError("User prediction CSV import must resolve a valid year.");
+  }
+
+  return {
+    userId: resolvedUserId,
+    year,
+    races: Array.from(grouped.values())
+  };
+}
+
+function parseUserCsvBoolean(value, fieldName, location, fallback = true) {
+  if (value === undefined || value === null || value === "") return fallback;
+  const normalized = String(value).trim().toLowerCase();
+  if (["true", "1", "yes", "on"].includes(normalized)) return true;
+  if (["false", "0", "no", "off"].includes(normalized)) return false;
+  throw buildUserImportError(`${location}: '${fieldName}' must be true or false.`);
+}
+
+function normalizeUsersJsonPayload(parsed) {
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw buildUserImportError("User import JSON must be an object.", USER_IMPORT_REQUIRED_JSON_HINT);
+  }
+
+  if (!Array.isArray(parsed.users) || parsed.users.length === 0) {
+    throw buildUserImportError("User import JSON must include a non-empty 'users' array.", USER_IMPORT_REQUIRED_JSON_HINT);
+  }
+
+  return {
+    users: parsed.users.map((user, index) => {
+      const location = `JSON users[${index}]`;
+      const name = String(user?.name || "").trim();
+      const email = String(user?.email || "").trim().toLowerCase();
+      const role = String(user?.role || "player").trim().toLowerCase();
+      const password = String(user?.password || "");
+      const id = user?.id ? String(user.id).trim() : "";
+
+      if (name.length < 2) {
+        throw buildUserImportError(`${location}: 'name' must be at least 2 characters.`, USER_IMPORT_REQUIRED_JSON_HINT);
+      }
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+        throw buildUserImportError(`${location}: 'email' must be a valid email address.`, USER_IMPORT_REQUIRED_JSON_HINT);
+      }
+      if (!["player", "admin"].includes(role)) {
+        throw buildUserImportError(`${location}: 'role' must be player or admin.`, USER_IMPORT_REQUIRED_JSON_HINT);
+      }
+      if (password && password.length < 8) {
+        throw buildUserImportError(`${location}: 'password' must be at least 8 characters when provided.`, USER_IMPORT_REQUIRED_JSON_HINT);
+      }
+      if (user?.emailVerified !== undefined && typeof user.emailVerified !== "boolean") {
+        throw buildUserImportError(`${location}: 'emailVerified' must be true or false.`, USER_IMPORT_REQUIRED_JSON_HINT);
+      }
+
+      return {
+        id: id || undefined,
+        name,
+        email,
+        role,
+        emailVerified: user?.emailVerified === undefined ? true : user.emailVerified,
+        password
+      };
+    })
+  };
+}
+
+function parseUsersCsvPayload(text) {
+  const { headers, rows } = parseCsvObjectsWithLineNumbers(text);
+  if (headers.length === 0 || rows.length === 0) {
+    throw buildUserImportError("User CSV import must include a header row and at least one data row.");
+  }
+
+  const missingHeaders = USER_IMPORT_CSV_HEADERS.filter((header) => !headers.includes(header));
+  if (missingHeaders.length > 0) {
+    throw buildUserImportError(`User CSV import is missing required columns: ${missingHeaders.join(", ")}.`);
+  }
+
+  return {
+    users: rows.map(({ lineNumber, row }) => {
+      const location = `CSV row ${lineNumber}`;
+      const name = String(row.name || "").trim();
+      const email = String(row.email || "").trim().toLowerCase();
+      const role = String(row.role || "player").trim().toLowerCase();
+      const password = String(row.password || "");
+      const id = String(row.id || "").trim();
+
+      if (name.length < 2) {
+        throw buildUserImportError(`${location}: 'name' must be at least 2 characters.`);
+      }
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+        throw buildUserImportError(`${location}: 'email' must be a valid email address.`);
+      }
+      if (!["player", "admin"].includes(role)) {
+        throw buildUserImportError(`${location}: 'role' must be player or admin.`);
+      }
+      if (password && password.length < 8) {
+        throw buildUserImportError(`${location}: 'password' must be at least 8 characters when provided.`);
+      }
+
+      return {
+        id: id || undefined,
+        name,
+        email,
+        role,
+        emailVerified: parseUserCsvBoolean(row.emailVerified, "emailVerified", location, true),
+        password
       };
     })
   };
@@ -674,6 +975,24 @@ export default function AdminPage() {
   const [predictionYear, setPredictionYear] = useState(String(currentYear));
   const [predictionRaceScope, setPredictionRaceScope] = useState("upcoming");
   const [users, setUsers] = useState([]);
+  const [userMessage, setUserMessage] = useState("");
+  const [userBulkInputKey, setUserBulkInputKey] = useState(0);
+  const [newUserForm, setNewUserForm] = useState({
+    name: "",
+    email: "",
+    password: "",
+    role: "player",
+    emailVerified: true
+  });
+  const [userPredictionYear, setUserPredictionYear] = useState(String(currentYear));
+  const [selectedUserPredictionUserId, setSelectedUserPredictionUserId] = useState("");
+  const [userPredictionDetail, setUserPredictionDetail] = useState(null);
+  const [userPredictionMessage, setUserPredictionMessage] = useState("");
+  const [userPredictionBulkFileName, setUserPredictionBulkFileName] = useState("");
+  const [userPredictionBulkInputKey, setUserPredictionBulkInputKey] = useState(0);
+  const [userPredictionBulkPayload, setUserPredictionBulkPayload] = useState(null);
+  const [userPredictionBulkPreview, setUserPredictionBulkPreview] = useState(null);
+  const [userPredictionConfirmState, setUserPredictionConfirmState] = useState({ isOpen: false, includePastRaces: false });
   const [editingUserId, setEditingUserId] = useState(null);
   const [editingUserForm, setEditingUserForm] = useState({ name: "", email: "" });
   const [predictionRaceId, setPredictionRaceId] = useState("");
@@ -802,6 +1121,33 @@ export default function AdminPage() {
   }, [mediaOverrides, mediaType]);
 
   async function loadRaces() {
+      async function loadUsers() {
+        try {
+          const data = await apiFetch("/admin/users");
+          setUsers(data);
+          if (!selectedUserPredictionUserId && data[0]?.id) {
+            setSelectedUserPredictionUserId(data[0].id);
+          }
+        } catch (err) {
+          setUserMessage(String(err.message || err));
+          setUsers([]);
+        }
+      }
+
+      async function loadUserPredictionDetail(userId = selectedUserPredictionUserId, year = userPredictionYear) {
+        if (!userId) {
+          setUserPredictionDetail(null);
+          return;
+        }
+
+        try {
+          const detail = await apiFetch(`/admin/users/${userId}/predictions?year=${encodeURIComponent(year)}`);
+          setUserPredictionDetail(detail);
+        } catch (err) {
+          setUserPredictionDetail(null);
+          setUserPredictionMessage(String(err.message || err));
+        }
+      }
     try {
       const data = await apiFetch("/races");
       setAllRaces(data);
@@ -1020,15 +1366,15 @@ export default function AdminPage() {
   useEffect(() => {
     if (!isRoleResolved) return;
     if (activeTab !== "users") return;
-    (async () => {
-      try {
-        const data = await apiFetch("/admin/users");
-        setUsers(data);
-      } catch (err) {
-        setMessage(String(err.message || err));
-      }
-    })();
+    loadUsers();
   }, [activeTab, isRoleResolved]);
+
+  useEffect(() => {
+    if (!isRoleResolved) return;
+    if (activeTab !== "users") return;
+    if (!selectedUserPredictionUserId) return;
+    loadUserPredictionDetail(selectedUserPredictionUserId, userPredictionYear);
+  }, [activeTab, isRoleResolved, selectedUserPredictionUserId, userPredictionYear]);
 
   useEffect(() => {
     if (!isRoleResolved) return;
@@ -1205,11 +1551,223 @@ export default function AdminPage() {
         method: "PATCH",
         body: JSON.stringify({ role })
       });
-      setUsers((prev) => prev.map((row) => (row.id === userId ? { ...row, role: updated.role } : row)));
-      setMessage("User role updated");
+      setUsers((prev) => prev.map((row) => (row.id === userId ? updated : row)));
+      setUserMessage("User role updated");
     } catch (err) {
-      setMessage(String(err.message || err));
+      setUserMessage(String(err.message || err));
     }
+  }
+
+  function resetNewUserForm() {
+    setNewUserForm({
+      name: "",
+      email: "",
+      password: "",
+      role: "player",
+      emailVerified: true
+    });
+  }
+
+  async function createAdminUser(e) {
+    e.preventDefault();
+    setUserMessage("");
+
+    try {
+      const created = await apiFetch("/admin/users", {
+        method: "POST",
+        body: JSON.stringify(newUserForm)
+      });
+      setUsers((prev) => [created, ...prev]);
+      resetNewUserForm();
+      setUserMessage(`Created user ${created.email}.`);
+    } catch (err) {
+      setUserMessage(String(err.message || err));
+    }
+  }
+
+  async function exportUsersJson() {
+    setUserMessage("");
+    try {
+      const payload = await apiFetch("/admin/bulk/users/export");
+      downloadJsonFile("users-export.json", payload);
+      setUserMessage(`Exported ${payload.users?.length || 0} users to JSON.`);
+    } catch (err) {
+      setUserMessage(String(err.message || err));
+    }
+  }
+
+  async function exportUsersCsv() {
+    setUserMessage("");
+    try {
+      const payload = await apiFetch("/admin/bulk/users/export");
+      downloadTextFile("users-export.csv", buildUsersExportCsv(payload), "text/csv;charset=utf-8");
+      setUserMessage(`Exported ${payload.users?.length || 0} users to CSV.`);
+    } catch (err) {
+      setUserMessage(String(err.message || err));
+    }
+  }
+
+  function resetUsersBulkInput(message = "") {
+    setUserBulkInputKey((current) => current + 1);
+    if (message) setUserMessage(message);
+  }
+
+  async function handleUsersBulkFile(file) {
+    setUserMessage("");
+    if (!file) return;
+
+    try {
+      const text = await readFileText(file);
+      const lowerName = String(file.name || "").toLowerCase();
+      let payload = null;
+
+      if (lowerName.endsWith(".json")) {
+        try {
+          payload = normalizeUsersJsonPayload(JSON.parse(text));
+        } catch (err) {
+          if (err instanceof SyntaxError) {
+            throw buildUserImportError("User import JSON is invalid and could not be parsed.", USER_IMPORT_REQUIRED_JSON_HINT);
+          }
+          throw err;
+        }
+      } else if (lowerName.endsWith(".csv")) {
+        payload = parseUsersCsvPayload(text);
+      } else {
+        throw buildUserImportError("User import file must be a .json or .csv export.", `${USER_IMPORT_REQUIRED_JSON_HINT} ${USER_IMPORT_REQUIRED_CSV_HINT}`);
+      }
+
+      const response = await apiFetch("/admin/bulk/users", {
+        method: "POST",
+        body: JSON.stringify(payload)
+      });
+
+      await loadUsers();
+      resetUsersBulkInput(`Users import complete: created ${response.created}, updated ${response.updated}, failed ${response.failed}.`);
+    } catch (err) {
+      resetUsersBulkInput(String(err.message || err));
+    }
+  }
+
+  async function exportUserPredictionsJson() {
+    setUserPredictionMessage("");
+    if (!selectedUserPredictionUserId) {
+      setUserPredictionMessage("Select a user first.");
+      return;
+    }
+
+    try {
+      const payload = await apiFetch(`/admin/bulk/user-predictions/export?userId=${encodeURIComponent(selectedUserPredictionUserId)}&year=${encodeURIComponent(userPredictionYear)}`);
+      const safeEmail = String(payload?.user?.email || selectedUserPredictionUserId).replace(/[^a-z0-9@._-]+/gi, "-");
+      downloadJsonFile(`user-predictions-${safeEmail}-${userPredictionYear}.json`, payload);
+      setUserPredictionMessage(`Exported ${payload.races?.length || 0} user prediction entries to JSON.`);
+    } catch (err) {
+      setUserPredictionMessage(String(err.message || err));
+    }
+  }
+
+  async function exportUserPredictionsCsv() {
+    setUserPredictionMessage("");
+    if (!selectedUserPredictionUserId) {
+      setUserPredictionMessage("Select a user first.");
+      return;
+    }
+
+    try {
+      const payload = await apiFetch(`/admin/bulk/user-predictions/export?userId=${encodeURIComponent(selectedUserPredictionUserId)}&year=${encodeURIComponent(userPredictionYear)}`);
+      const safeEmail = String(payload?.user?.email || selectedUserPredictionUserId).replace(/[^a-z0-9@._-]+/gi, "-");
+      downloadTextFile(`user-predictions-${safeEmail}-${userPredictionYear}.csv`, buildUserPredictionsExportCsv(payload), "text/csv;charset=utf-8");
+      setUserPredictionMessage(`Exported ${payload.races?.length || 0} user prediction entries to CSV.`);
+    } catch (err) {
+      setUserPredictionMessage(String(err.message || err));
+    }
+  }
+
+  function clearUserPredictionBulkImport(message = "") {
+    setUserPredictionBulkPayload(null);
+    setUserPredictionBulkPreview(null);
+    setUserPredictionBulkFileName("");
+    setUserPredictionConfirmState({ isOpen: false, includePastRaces: false });
+    setUserPredictionBulkInputKey((current) => current + 1);
+    setUserPredictionMessage(message);
+  }
+
+  async function previewUserPredictionBulkFile(file) {
+    setUserPredictionMessage("");
+    if (!file) return;
+
+    try {
+      const text = await readFileText(file);
+      const lowerName = String(file.name || "").toLowerCase();
+      let payload = null;
+
+      if (lowerName.endsWith(".json")) {
+        try {
+          payload = normalizeUserPredictionJsonPayload(JSON.parse(text), selectedUserPredictionUserId, userPredictionYear);
+        } catch (err) {
+          if (err instanceof SyntaxError) {
+            throw buildUserPredictionImportError("User prediction import JSON is invalid and could not be parsed.", USER_PREDICTION_IMPORT_REQUIRED_JSON_HINT);
+          }
+          throw err;
+        }
+      } else if (lowerName.endsWith(".csv")) {
+        payload = parseUserPredictionsCsvPayload(text, selectedUserPredictionUserId, userPredictionYear);
+      } else {
+        throw buildUserPredictionImportError("User prediction import file must be a .json or .csv export.", `${USER_PREDICTION_IMPORT_REQUIRED_JSON_HINT} ${USER_PREDICTION_IMPORT_REQUIRED_CSV_HINT}`);
+      }
+
+      const preview = await apiFetch("/admin/bulk/user-predictions/preview", {
+        method: "POST",
+        body: JSON.stringify(payload)
+      });
+      setUserPredictionBulkPayload(payload);
+      setUserPredictionBulkPreview(preview);
+      setUserPredictionBulkFileName(file.name);
+      setUserPredictionMessage(
+        preview.summary.changedEntries > 0
+          ? `Preview ready for ${preview.summary.changedEntries} changed user prediction entries. Future races will update by default.`
+          : "No user prediction changes detected in the imported file."
+      );
+    } catch (err) {
+      clearUserPredictionBulkImport(String(err.message || err));
+    }
+  }
+
+  async function runUserPredictionBulkImport(includePastRaces = false) {
+    if (!userPredictionBulkPayload || !userPredictionBulkPreview) {
+      setUserPredictionMessage("Import a user prediction file first.");
+      return;
+    }
+
+    try {
+      const response = await apiFetch("/admin/bulk/user-predictions/apply", {
+        method: "POST",
+        body: JSON.stringify({ ...userPredictionBulkPayload, includePastRaces })
+      });
+      clearUserPredictionBulkImport(
+        `User prediction import applied: updated ${response.updated}, skipped past races ${response.skippedPastRaces}, failed ${response.failed}.`
+      );
+      await loadUserPredictionDetail(userPredictionBulkPayload.userId, userPredictionBulkPayload.year);
+    } catch (err) {
+      setUserPredictionMessage(String(err.message || err));
+    }
+  }
+
+  function requestUserPredictionBulkImport(includePastRaces = false) {
+    if (!userPredictionBulkPayload || !userPredictionBulkPreview) {
+      setUserPredictionMessage("Import a user prediction file first.");
+      return;
+    }
+
+    const requiresModal = includePastRaces
+      ? userPredictionBulkPreview.summary.pastEntriesWithChanges > 0 || userPredictionBulkPreview.summary.highRiskChanges > 0
+      : userPredictionBulkPreview.summary.highRiskChanges > 0;
+
+    if (!requiresModal) {
+      runUserPredictionBulkImport(includePastRaces);
+      return;
+    }
+
+    setUserPredictionConfirmState({ isOpen: true, includePastRaces });
   }
 
   async function createRace(e) {
@@ -2914,17 +3472,267 @@ raceId,tieBreakerValue,categoryName,valueText,valueNumber
       ) : null}
 
       {activeTab === "users" ? (
-        <section className="card p-4 text-sm text-slate-200">
+        <section className="card space-y-4 p-4 text-sm text-slate-200">
           <h2 className="font-display text-2xl text-accent-cyan">Users</h2>
-          <p className="mt-2 text-slate-300">List of registered users. Click edit to change name or email.</p>
-          {message && <p className="text-accent-gold">{message}</p>}
-          <div className="mt-3 overflow-auto">
+          <p className="text-slate-300">Create users directly from the admin UI, or bulk export/import them as JSON or CSV. Passwords are never exported; leave the password field blank during import to keep an existing password unchanged.</p>
+
+          <form onSubmit={createAdminUser} className="rounded-xl border border-white/20 bg-white/5 p-4">
+            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+              <div>
+                <p className="font-semibold text-slate-100">Add User</p>
+                <p className="mt-1 text-xs text-slate-400">Create a player or admin account directly. New users need a password of at least 8 characters.</p>
+              </div>
+              <button type="submit" className="tap rounded-xl bg-accent-red px-4 py-2 font-bold text-white">Create User</button>
+            </div>
+
+            <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+              <label className="text-xs text-slate-300">
+                Name
+                <input
+                  className="mt-1 w-full rounded-xl border border-white/30 bg-white/10 px-3 py-2 text-white"
+                  value={newUserForm.name}
+                  onChange={(e) => setNewUserForm((prev) => ({ ...prev, name: e.target.value }))}
+                  required
+                />
+              </label>
+              <label className="text-xs text-slate-300">
+                Email
+                <input
+                  type="email"
+                  className="mt-1 w-full rounded-xl border border-white/30 bg-white/10 px-3 py-2 text-white"
+                  value={newUserForm.email}
+                  onChange={(e) => setNewUserForm((prev) => ({ ...prev, email: e.target.value }))}
+                  required
+                />
+              </label>
+              <label className="text-xs text-slate-300">
+                Password
+                <input
+                  type="password"
+                  className="mt-1 w-full rounded-xl border border-white/30 bg-white/10 px-3 py-2 text-white"
+                  value={newUserForm.password}
+                  onChange={(e) => setNewUserForm((prev) => ({ ...prev, password: e.target.value }))}
+                  minLength={8}
+                  required
+                />
+              </label>
+              <label className="text-xs text-slate-300">
+                Role
+                <select
+                  className="mt-1 w-full rounded-xl border border-white/30 bg-white/10 px-3 py-2 text-white"
+                  value={newUserForm.role}
+                  onChange={(e) => setNewUserForm((prev) => ({ ...prev, role: e.target.value }))}
+                >
+                  <option value="player" className="bg-track-900 text-white">player</option>
+                  <option value="admin" className="bg-track-900 text-white">admin</option>
+                </select>
+              </label>
+              <label className="flex items-center gap-2 text-xs text-slate-300 md:pt-6">
+                <input
+                  type="checkbox"
+                  checked={newUserForm.emailVerified}
+                  onChange={(e) => setNewUserForm((prev) => ({ ...prev, emailVerified: e.target.checked }))}
+                />
+                Mark email as verified
+              </label>
+            </div>
+          </form>
+
+          <div className="rounded-xl border border-white/20 bg-white/5 p-4 space-y-3">
+            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+              <div>
+                <p className="font-semibold text-slate-100">Bulk User Export / Import</p>
+                <p className="mt-1 text-xs text-slate-400">Export the current user list as JSON or CSV, edit offline, then import it back. Existing users are matched by exported user id first, then email.</p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <button type="button" className="tap rounded-xl border border-white/30 px-4 py-2 font-bold text-slate-100" onClick={exportUsersJson}>Export JSON</button>
+                <button type="button" className="tap rounded-xl border border-white/30 px-4 py-2 font-bold text-slate-100" onClick={exportUsersCsv}>Export CSV</button>
+              </div>
+            </div>
+
+            <div>
+              <input
+                key={userBulkInputKey}
+                type="file"
+                accept=".json,.csv,application/json,text/csv"
+                onChange={(e) => handleUsersBulkFile(e.target.files?.[0])}
+              />
+              <p className="mt-2 text-xs text-slate-400">Import the exported JSON or CSV format. New users need a password value; existing users can leave password blank to keep the current password.</p>
+            </div>
+          </div>
+
+          <div className="rounded-xl border border-white/20 bg-white/5 p-4 space-y-3">
+            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+              <div>
+                <p className="font-semibold text-slate-100">User Predictions</p>
+                <p className="mt-1 text-xs text-slate-400">View a selected user’s saved picks and bulk export or import them with a preview step before applying updates.</p>
+              </div>
+              <div className="grid gap-2 md:grid-cols-2">
+                <label className="text-xs text-slate-300">
+                  User
+                  <select
+                    className="mt-1 w-full rounded-xl border border-white/30 bg-white/10 px-3 py-2 text-white"
+                    value={selectedUserPredictionUserId}
+                    onChange={(e) => setSelectedUserPredictionUserId(e.target.value)}
+                  >
+                    <option value="" className="bg-track-900 text-slate-300">Select user</option>
+                    {users.map((user) => (
+                      <option key={`prediction-user-${user.id}`} value={user.id} className="bg-track-900 text-white">
+                        {user.name} ({user.email})
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="text-xs text-slate-300">
+                  Year
+                  <select
+                    className="mt-1 w-full rounded-xl border border-white/30 bg-white/10 px-3 py-2 text-white"
+                    value={userPredictionYear}
+                    onChange={(e) => setUserPredictionYear(e.target.value)}
+                  >
+                    {predictionYearOptions.map((year) => (
+                      <option key={`user-prediction-year-${year}`} value={year} className="bg-track-900 text-white">
+                        {year}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap gap-2">
+              <button type="button" className="tap rounded-xl border border-white/30 px-4 py-2 font-bold text-slate-100" onClick={exportUserPredictionsJson} disabled={!selectedUserPredictionUserId}>Export JSON</button>
+              <button type="button" className="tap rounded-xl border border-white/30 px-4 py-2 font-bold text-slate-100" onClick={exportUserPredictionsCsv} disabled={!selectedUserPredictionUserId}>Export CSV</button>
+            </div>
+
+            <div>
+              <input
+                key={userPredictionBulkInputKey}
+                type="file"
+                accept=".json,.csv,application/json,text/csv"
+                onChange={(e) => previewUserPredictionBulkFile(e.target.files?.[0])}
+              />
+              <p className="mt-2 text-xs text-slate-400">Import the exported JSON or CSV format for the selected user. You’ll get a preview of changed races, risk levels, and past-race warnings before any picks are overwritten.</p>
+            </div>
+
+            {userPredictionBulkFileName ? (
+              <p className="text-xs text-slate-300">Previewing import file: {userPredictionBulkFileName}</p>
+            ) : null}
+
+            {userPredictionBulkPreview ? (
+              <div className="space-y-3 rounded-xl border border-white/10 bg-track-900/40 p-3">
+                <div className="grid gap-2 md:grid-cols-3">
+                  <div className="rounded-lg border border-white/10 bg-white/5 p-3">
+                    <p className="text-xs uppercase tracking-[0.2em] text-slate-400">Changed Entries</p>
+                    <p className="mt-2 text-xl font-semibold text-white">{userPredictionBulkPreview.summary.changedEntries}</p>
+                  </div>
+                  <div className="rounded-lg border border-white/10 bg-white/5 p-3">
+                    <p className="text-xs uppercase tracking-[0.2em] text-slate-400">Future By Default</p>
+                    <p className="mt-2 text-xl font-semibold text-white">{userPredictionBulkPreview.summary.futureEntriesToApplyByDefault}</p>
+                  </div>
+                  <div className="rounded-lg border border-white/10 bg-white/5 p-3">
+                    <p className="text-xs uppercase tracking-[0.2em] text-slate-400">Past Warnings</p>
+                    <p className="mt-2 text-xl font-semibold text-white">{userPredictionBulkPreview.summary.pastEntriesWithChanges}</p>
+                  </div>
+                </div>
+
+                <div className="grid gap-2 md:grid-cols-3">
+                  <p className="rounded-lg border border-emerald-400/20 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-100">Low risk: {userPredictionBulkPreview.summary.lowRiskChanges}</p>
+                  <p className="rounded-lg border border-amber-400/20 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">Medium risk: {userPredictionBulkPreview.summary.mediumRiskChanges}</p>
+                  <p className="rounded-lg border border-red-400/20 bg-red-500/10 px-3 py-2 text-xs text-red-100">High risk: {userPredictionBulkPreview.summary.highRiskChanges}</p>
+                </div>
+
+                <div className="space-y-2 max-h-72 overflow-y-auto rounded-lg border border-white/10 bg-white/5 p-3">
+                  {userPredictionBulkPreview.races.filter((entry) => entry.changes.length > 0).map((entry) => (
+                    <div key={`user-prediction-preview-${entry.raceId}-${entry.leagueId}`} className="rounded-lg border border-white/10 p-3">
+                      <div className="flex flex-col gap-1 md:flex-row md:items-center md:justify-between">
+                        <p className="font-semibold text-slate-100">{entry.raceName} • {entry.leagueName}</p>
+                        <p className={`text-xs font-semibold ${entry.riskLevel === "high" ? "text-red-300" : entry.riskLevel === "medium" ? "text-amber-300" : "text-emerald-300"}`}>
+                          {entry.hasOccurred ? "Occurred race" : "Future race"} • {entry.riskLevel.toUpperCase()} risk
+                        </p>
+                      </div>
+                      <p className="mt-1 text-xs text-slate-400">{entry.raceDate ? new Date(entry.raceDate).toLocaleString() : "Unknown date"} • Status {entry.pickStatus}</p>
+                      <ul className="mt-2 space-y-1 text-xs text-slate-300">
+                        {entry.changes.slice(0, 6).map((change, idx) => (
+                          <li key={`${entry.raceId}-${entry.leagueId}-${change.type}-${idx}`}>{change.summary}</li>
+                        ))}
+                        {entry.changes.length > 6 ? <li>...and {entry.changes.length - 6} more changes</li> : null}
+                      </ul>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="flex flex-wrap gap-2">
+                  <button type="button" className="tap rounded-xl bg-accent-cyan px-4 py-2 font-bold text-track-900" onClick={() => requestUserPredictionBulkImport(false)} disabled={userPredictionBulkPreview.summary.futureEntriesToApplyByDefault === 0}>Apply To Future Races</button>
+                  <button type="button" className="tap rounded-xl border border-amber-300/40 px-4 py-2 font-bold text-amber-100" onClick={() => requestUserPredictionBulkImport(true)} disabled={userPredictionBulkPreview.summary.changedEntries === 0}>Apply Including Past Races</button>
+                  <button type="button" className="tap rounded-xl border border-white/20 px-4 py-2 font-bold text-slate-200" onClick={() => clearUserPredictionBulkImport("User prediction import cancelled.")}>Cancel Import</button>
+                </div>
+              </div>
+            ) : null}
+
+            {userPredictionMessage ? <p className="text-accent-gold">{userPredictionMessage}</p> : null}
+
+            {userPredictionDetail ? (
+              <div className="rounded-xl border border-white/10 bg-track-900/30 p-3">
+                <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+                  <div>
+                    <p className="font-semibold text-slate-100">Current Saved Predictions</p>
+                    <p className="mt-1 text-xs text-slate-400">{userPredictionDetail.user?.name} • {userPredictionDetail.races?.length || 0} race / league entries in {userPredictionYear}</p>
+                  </div>
+                </div>
+
+                {userPredictionDetail.races?.length ? (
+                  <div className="mt-3 space-y-3 max-h-[34rem] overflow-y-auto">
+                    {userPredictionDetail.races.map((entry) => (
+                      <div key={`user-prediction-entry-${entry.raceId}-${entry.leagueId}`} className="rounded-lg border border-white/10 bg-white/5 p-3">
+                        <div className="flex flex-col gap-1 md:flex-row md:items-center md:justify-between">
+                          <div>
+                            <p className="font-semibold text-slate-100">{entry.raceName}</p>
+                            <p className="text-xs text-slate-400">{entry.leagueName} • {entry.raceDate ? new Date(entry.raceDate).toLocaleDateString() : "No race date"}</p>
+                          </div>
+                          <p className="text-xs font-semibold text-accent-gold">{entry.pickStatus}</p>
+                        </div>
+                        <div className="mt-3 overflow-x-auto">
+                          <table className="min-w-[560px] text-xs text-slate-100">
+                            <thead>
+                              <tr className="border-b border-white/20">
+                                <th className="px-2 py-2 text-left text-accent-cyan">Category</th>
+                                <th className="px-2 py-2 text-left text-accent-cyan">Text Pick</th>
+                                <th className="px-2 py-2 text-left text-accent-cyan">Numeric Pick</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {(entry.picks || []).map((pick) => (
+                                <tr key={`${entry.raceId}-${entry.leagueId}-${pick.categoryId}`} className="border-b border-white/10 last:border-0">
+                                  <td className="px-2 py-2">{pick.categoryName}</td>
+                                  <td className="px-2 py-2">{pick.valueText || "-"}</td>
+                                  <td className="px-2 py-2">{pick.valueNumber ?? "-"}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="mt-3 text-xs text-slate-400">No saved predictions found for this user in the selected year.</p>
+                )}
+              </div>
+            ) : null}
+          </div>
+
+          {userMessage ? <p className="text-accent-gold">{userMessage}</p> : null}
+
+          <div className="overflow-auto rounded-xl border border-white/10 bg-white/5 p-3">
             <table className="w-full text-left">
               <thead>
                 <tr>
                   <th className="pb-2">Name</th>
                   <th className="pb-2">Email</th>
                   <th className="pb-2">Role</th>
+                  <th className="pb-2">Verified</th>
+                  <th className="pb-2">Created</th>
                   <th className="pb-2">Actions</th>
                 </tr>
               </thead>
@@ -2932,12 +3740,14 @@ raceId,tieBreakerValue,categoryName,valueText,valueNumber
                 {users.map((u) => (
                   <tr key={u.id} className="border-t">
                     <td className="py-2">{editingUserId === u.id ? (
-                      <input className="border p-1 w-48" value={editingUserForm.name} onChange={(e) => setEditingUserForm((s) => ({ ...s, name: e.target.value }))} />
+                      <input className="w-48 rounded border border-white/30 bg-white/10 p-1 text-white" value={editingUserForm.name} onChange={(e) => setEditingUserForm((s) => ({ ...s, name: e.target.value }))} />
                     ) : u.name}</td>
                     <td className="py-2">{editingUserId === u.id ? (
-                      <input className="border p-1 w-64" value={editingUserForm.email} onChange={(e) => setEditingUserForm((s) => ({ ...s, email: e.target.value }))} />
+                      <input className="w-64 rounded border border-white/30 bg-white/10 p-1 text-white" value={editingUserForm.email} onChange={(e) => setEditingUserForm((s) => ({ ...s, email: e.target.value }))} />
                     ) : u.email}</td>
                     <td className="py-2">{u.role}</td>
+                    <td className="py-2">{u.emailVerified ? "Yes" : "No"}</td>
+                    <td className="py-2 text-xs text-slate-400">{u.created_at ? new Date(u.created_at).toLocaleDateString() : "-"}</td>
                     <td className="py-2">
                       {editingUserId === u.id ? (
                         <>
@@ -2948,9 +3758,9 @@ raceId,tieBreakerValue,categoryName,valueText,valueNumber
                               setUsers((prev) => prev.map((row) => (row.id === u.id ? updated : row)));
                               setEditingUserId(null);
                               setEditingUserForm({ name: "", email: "" });
-                              setMessage("User updated");
+                              setUserMessage("User updated");
                             } catch (err) {
-                              setMessage(String(err.message || err));
+                              setUserMessage(String(err.message || err));
                             }
                           }}>Save</button>
                           <button type="button" className="tap rounded px-2 py-1 text-sm" onClick={() => { setEditingUserId(null); setEditingUserForm({ name: "", email: "" }); }}>Cancel</button>
@@ -3057,6 +3867,92 @@ raceId,tieBreakerValue,categoryName,valueText,valueNumber
                 onClick={() => runPredictionBulkImport(predictionBulkConfirmState.includePastRaces)}
               >
                 {predictionBulkConfirmState.includePastRaces ? "Confirm Apply Including Past Races" : "Confirm Apply To Future Races"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {userPredictionConfirmState.isOpen && userPredictionBulkPreview ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 px-4">
+          <div className="w-full max-w-3xl rounded-3xl border border-white/15 bg-track-900 p-5 text-sm text-slate-200 shadow-2xl">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h3 className="font-display text-2xl text-accent-cyan">Confirm User Prediction Import</h3>
+                <p className="mt-2 text-sm text-slate-300">
+                  {userPredictionConfirmState.includePastRaces
+                    ? "This import includes races that have already happened. Review the summary before applying changes to this user's picks."
+                    : "This import contains high-risk user pick changes. Review the summary before applying future-race updates."}
+                </p>
+              </div>
+              <button
+                type="button"
+                className="tap rounded-full border border-white/20 px-3 py-1 text-xs text-slate-300"
+                onClick={() => setUserPredictionConfirmState({ isOpen: false, includePastRaces: false })}
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="mt-4 grid gap-2 md:grid-cols-4">
+              <div className="rounded-xl border border-white/10 bg-white/5 p-3">
+                <p className="text-xs uppercase tracking-[0.2em] text-slate-400">Changed Entries</p>
+                <p className="mt-2 text-xl font-semibold text-white">{userPredictionBulkPreview.summary.changedEntries}</p>
+              </div>
+              <div className="rounded-xl border border-emerald-400/15 bg-emerald-500/10 p-3">
+                <p className="text-xs uppercase tracking-[0.2em] text-emerald-200">Low Risk</p>
+                <p className="mt-2 text-xl font-semibold text-white">{userPredictionBulkPreview.summary.lowRiskChanges}</p>
+              </div>
+              <div className="rounded-xl border border-amber-400/15 bg-amber-500/10 p-3">
+                <p className="text-xs uppercase tracking-[0.2em] text-amber-200">Medium Risk</p>
+                <p className="mt-2 text-xl font-semibold text-white">{userPredictionBulkPreview.summary.mediumRiskChanges}</p>
+              </div>
+              <div className="rounded-xl border border-red-400/15 bg-red-500/10 p-3">
+                <p className="text-xs uppercase tracking-[0.2em] text-red-200">High Risk</p>
+                <p className="mt-2 text-xl font-semibold text-white">{userPredictionBulkPreview.summary.highRiskChanges}</p>
+              </div>
+            </div>
+
+            <div className="mt-4 max-h-80 space-y-2 overflow-y-auto rounded-2xl border border-white/10 bg-white/5 p-3">
+              {userPredictionBulkPreview.races.filter((entry) => entry.changes.length > 0).map((entry) => (
+                <div key={`user-prediction-confirm-${entry.raceId}-${entry.leagueId}`} className="rounded-xl border border-white/10 p-3">
+                  <div className="flex flex-col gap-1 md:flex-row md:items-center md:justify-between">
+                    <p className="font-semibold text-slate-100">{entry.raceName} • {entry.leagueName}</p>
+                    <p className={`text-xs font-semibold ${entry.riskLevel === "high" ? "text-red-300" : entry.riskLevel === "medium" ? "text-amber-300" : "text-emerald-300"}`}>
+                      {entry.hasOccurred ? "Occurred race" : "Future race"} • {entry.riskLevel.toUpperCase()} risk
+                    </p>
+                  </div>
+                  <p className="mt-1 text-xs text-slate-400">{entry.raceDate ? new Date(entry.raceDate).toLocaleString() : "Unknown date"} • Status {entry.pickStatus}</p>
+                  <ul className="mt-2 space-y-1 text-xs text-slate-300">
+                    {entry.changes.map((change, idx) => (
+                      <li key={`${entry.raceId}-${entry.leagueId}-${change.type}-${idx}`}>{change.summary}</li>
+                    ))}
+                  </ul>
+                </div>
+              ))}
+            </div>
+
+            <div className="mt-4 flex flex-wrap gap-2">
+              <button
+                type="button"
+                className="tap rounded-xl border border-white/20 px-4 py-2 font-bold text-slate-200"
+                onClick={() => setUserPredictionConfirmState({ isOpen: false, includePastRaces: false })}
+              >
+                Back To Preview
+              </button>
+              <button
+                type="button"
+                className="tap rounded-xl border border-red-300/30 px-4 py-2 font-bold text-red-100"
+                onClick={() => clearUserPredictionBulkImport("User prediction import cancelled.")}
+              >
+                Discard Import
+              </button>
+              <button
+                type="button"
+                className={`tap rounded-xl px-4 py-2 font-bold ${userPredictionConfirmState.includePastRaces ? "bg-amber-500 text-track-900" : "bg-accent-cyan text-track-900"}`}
+                onClick={() => runUserPredictionBulkImport(userPredictionConfirmState.includePastRaces)}
+              >
+                {userPredictionConfirmState.includePastRaces ? "Confirm Apply Including Past Races" : "Confirm Apply To Future Races"}
               </button>
             </div>
           </div>

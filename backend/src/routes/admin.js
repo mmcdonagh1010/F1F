@@ -1,5 +1,6 @@
 import express from "express";
 import crypto from "crypto";
+import bcrypt from "bcryptjs";
 // MongoDB-only: removed SQL fallback and imports
 import { authRequired, adminRequired } from "../middleware/auth.js";
 import { buildRateLimiter } from "../middleware/rateLimit.js";
@@ -88,6 +89,64 @@ const PREDICTION_PRESETS = {
 const VALID_MEDIA_OVERRIDE_TYPES = new Set(["drivers", "teams", "races", "driver", "team", "race"]);
 const MEDIA_DATA_URL_PREFIX = /^data:image\/[a-zA-Z0-9.+-]+;base64,/;
 const MAX_MEDIA_DATA_URL_LENGTH = 2_500_000;
+const USER_BULK_EXPORT_VERSION = 1;
+
+function isValidEmailAddress(value) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(value || "").trim());
+}
+
+function isMongoObjectId(value) {
+  return /^[a-f\d]{24}$/i.test(String(value || "").trim());
+}
+
+function serializeAdminUser(user) {
+  return {
+    id: String(user._id || user.id),
+    name: user.name,
+    email: user.email,
+    role: user.role,
+    emailVerified: Boolean(user.email_verified_at),
+    created_at: user.created_at,
+    password: ""
+  };
+}
+
+function normalizeAdminUserInput(raw, { allowBlankPassword = true, defaultEmailVerified = true } = {}) {
+  const name = String(raw?.name || "").trim();
+  const email = String(raw?.email || "").trim().toLowerCase();
+  const password = String(raw?.password || "");
+  const role = String(raw?.role || "player").trim().toLowerCase();
+  const id = raw?.id ? String(raw.id).trim() : "";
+  const emailVerified = raw?.emailVerified === undefined ? defaultEmailVerified : Boolean(raw.emailVerified);
+
+  if (!name || name.length < 2) {
+    throw new Error("name must be at least 2 characters");
+  }
+  if (!isValidEmailAddress(email)) {
+    throw new Error("email must be a valid email address");
+  }
+  if (!["player", "admin"].includes(role)) {
+    throw new Error("role must be player or admin");
+  }
+  if (!allowBlankPassword && password.length < 8) {
+    throw new Error("password must be at least 8 characters");
+  }
+  if (allowBlankPassword && password && password.length < 8) {
+    throw new Error("password must be at least 8 characters when provided");
+  }
+  if (id && !isMongoObjectId(id)) {
+    throw new Error("id must be a valid user id when provided");
+  }
+
+  return {
+    id: id || null,
+    name,
+    email,
+    password,
+    role,
+    emailVerified
+  };
+}
 
 function normalizePointOverride(raw, preset) {
   if (!raw || typeof raw !== "object") {
@@ -489,6 +548,283 @@ async function loadPredictionBulkRows(year, importedRaces = null) {
       incomingCategories
     };
   });
+}
+
+function normalizeUserPredictionValueText(value) {
+  const normalized = String(value || "").trim();
+  return normalized || null;
+}
+
+function normalizeUserPredictionValueNumber(value) {
+  if (value === undefined || value === null || value === "") return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function summarizeUserPredictionBulkPreview(rows) {
+  const changedRows = (rows || []).filter((row) => row.changes.length > 0);
+  return {
+    totalEntries: (rows || []).length,
+    changedEntries: changedRows.length,
+    futureEntriesToApplyByDefault: changedRows.filter((row) => !row.hasOccurred).length,
+    pastEntriesWithChanges: changedRows.filter((row) => row.hasOccurred).length,
+    lowRiskChanges: changedRows.reduce((total, row) => total + row.changeCounts.low, 0),
+    mediumRiskChanges: changedRows.reduce((total, row) => total + row.changeCounts.medium, 0),
+    highRiskChanges: changedRows.reduce((total, row) => total + row.changeCounts.high, 0)
+  };
+}
+
+function buildUserPredictionBulkSummaryRow({ raceDoc, leagueDoc, existingEntry, importedEntry, importedPicks, missingRace = false, missingLeague = false, invalidCategories = [] }) {
+  const existingByName = new Map((existingEntry?.picks || []).map((pick) => [String(pick.categoryName), pick]));
+  const incomingByName = new Map((importedPicks || []).map((pick) => [String(pick.categoryName), pick]));
+  const allNames = [...new Set([...existingByName.keys(), ...incomingByName.keys()])].sort((a, b) => a.localeCompare(b));
+  const raceAt = new Date(raceDoc?.deadline_at || raceDoc?.race_date).getTime();
+  const hasOccurred = Number.isFinite(raceAt) ? raceAt <= Date.now() : false;
+  const changes = [];
+
+  if (missingRace) {
+    changes.push({
+      type: "race-missing",
+      categoryName: null,
+      riskLevel: "high",
+      summary: `Race '${String(importedEntry?.raceName || importedEntry?.raceId || "Unknown")}' was not found in this season`
+    });
+  }
+
+  if (missingLeague) {
+    changes.push({
+      type: "league-missing",
+      categoryName: null,
+      riskLevel: "high",
+      summary: `League '${String(importedEntry?.leagueName || importedEntry?.leagueId || "Unknown")}' was not found`
+    });
+  }
+
+  (invalidCategories || []).forEach((categoryName) => {
+    changes.push({
+      type: "category-missing",
+      categoryName,
+      riskLevel: "high",
+      summary: `Category '${categoryName}' does not exist on this race`
+    });
+  });
+
+  const existingStatus = String(existingEntry?.pickStatus || "empty");
+  const incomingStatus = String(importedEntry?.pickStatus || "submitted");
+  if (existingStatus !== incomingStatus) {
+    changes.push({
+      type: "status-updated",
+      categoryName: null,
+      riskLevel: hasOccurred ? "high" : "medium",
+      summary: `Pick status ${existingStatus} -> ${incomingStatus}`
+    });
+  }
+
+  for (const categoryName of allNames) {
+    const existing = existingByName.get(categoryName) || null;
+    const incoming = incomingByName.get(categoryName) || null;
+
+    if (!existing && incoming) {
+      changes.push({
+        type: "pick-added",
+        categoryName,
+        riskLevel: hasOccurred ? "high" : "medium",
+        summary: `Add pick for '${categoryName}'`
+      });
+      continue;
+    }
+
+    if (existing && !incoming) {
+      changes.push({
+        type: "pick-removed",
+        categoryName,
+        riskLevel: "high",
+        summary: `Remove pick for '${categoryName}'`
+      });
+      continue;
+    }
+
+    if (!existing || !incoming) continue;
+
+    const sameText = normalizeUserPredictionValueText(existing.valueText) === normalizeUserPredictionValueText(incoming.valueText);
+    const sameNumber = normalizeUserPredictionValueNumber(existing.valueNumber) === normalizeUserPredictionValueNumber(incoming.valueNumber);
+    if (!sameText || !sameNumber) {
+      changes.push({
+        type: "pick-updated",
+        categoryName,
+        riskLevel: hasOccurred ? "high" : "low",
+        summary: `Update pick for '${categoryName}'`
+      });
+    }
+  }
+
+  const riskLevel = changes.length > 0 ? getHighestRiskLevel(changes) : "low";
+  return {
+    raceId: raceDoc ? String(raceDoc._id) : String(importedEntry?.raceId || ""),
+    raceName: raceDoc?.name || importedEntry?.raceName || "Unknown race",
+    raceDate: raceDoc?.race_date || importedEntry?.raceDate || null,
+    leagueId: leagueDoc ? String(leagueDoc._id) : String(importedEntry?.leagueId || ""),
+    leagueName: leagueDoc?.name || importedEntry?.leagueName || "Unknown league",
+    hasOccurred,
+    willApplyByDefault: changes.length > 0 && !hasOccurred,
+    riskLevel,
+    pickStatus: incomingStatus,
+    submittedAt: importedEntry?.submittedAt || existingEntry?.submittedAt || null,
+    existingPickCount: (existingEntry?.picks || []).length,
+    incomingPickCount: (importedPicks || []).length,
+    changes,
+    changeCounts: {
+      low: changes.filter((change) => change.riskLevel === "low").length,
+      medium: changes.filter((change) => change.riskLevel === "medium").length,
+      high: changes.filter((change) => change.riskLevel === "high").length
+    },
+    missingRace,
+    missingLeague,
+    importedPicks
+  };
+}
+
+async function loadUserPredictionBulkRows({ userId, year, importedEntries = null }) {
+  const { connectMongo } = await import("../mongo.js");
+  const User = (await import("../models/User.js")).default;
+  const Race = (await import("../models/Race.js")).default;
+  const League = (await import("../models/League.js")).default;
+  const Pick = (await import("../models/Pick.js")).default;
+  const PickCategory = (await import("../models/PickCategory.js")).default;
+  await connectMongo();
+
+  const userDoc = await User.findById(userId).lean().exec();
+  if (!userDoc) throw new Error("User not found");
+
+  const raceDocs = await Race.find({
+    race_date: { $gte: new Date(`${year}-01-01`), $lte: new Date(`${year}-12-31`) }
+  }).sort({ race_date: 1 }).lean().exec();
+
+  const raceById = new Map(raceDocs.map((race) => [String(race._id), race]));
+  const categoryDocs = raceDocs.length > 0
+    ? await PickCategory.find({ race: { $in: raceDocs.map((race) => race._id) } }).sort({ race: 1, display_order: 1 }).lean().exec()
+    : [];
+  const categoriesByRaceId = new Map();
+  categoryDocs.forEach((category) => {
+    const key = String(category.race);
+    const list = categoriesByRaceId.get(key) || [];
+    list.push(category);
+    categoriesByRaceId.set(key, list);
+  });
+
+  const pickDocs = raceDocs.length > 0
+    ? await Pick.find({ user: userId, race: { $in: raceDocs.map((race) => race._id) } }).lean().exec()
+    : [];
+  const leagueIds = new Set(pickDocs.map((pick) => String(pick.league)).filter(Boolean));
+  (Array.isArray(importedEntries) ? importedEntries : []).forEach((entry) => {
+    if (entry?.leagueId) leagueIds.add(String(entry.leagueId));
+  });
+  const leagueDocs = leagueIds.size > 0
+    ? await League.find({ _id: { $in: Array.from(leagueIds) } }).select("name").lean().exec()
+    : [];
+  const leagueById = new Map(leagueDocs.map((league) => [String(league._id), league]));
+
+  const categoryByRaceAndName = new Map();
+  categoryDocs.forEach((category) => {
+    categoryByRaceAndName.set(`${String(category.race)}:${String(category.name).toLowerCase()}`, category);
+  });
+
+  const existingByKey = new Map();
+  pickDocs.forEach((pick) => {
+    const key = `${String(pick.race)}:${String(pick.league)}`;
+    const race = raceById.get(String(pick.race));
+    const league = leagueById.get(String(pick.league));
+    const category = categoryDocs.find((entry) => String(entry._id) === String(pick.category));
+    const current = existingByKey.get(key) || {
+      raceId: String(pick.race),
+      raceName: race?.name || "Unknown race",
+      raceDate: race?.race_date || null,
+      deadlineAt: race?.deadline_at || null,
+      leagueId: String(pick.league),
+      leagueName: league?.name || "Unknown league",
+      pickStatus: pick.status || "submitted",
+      submittedAt: pick.submitted_at || null,
+      picks: []
+    };
+    current.pickStatus = pick.status || current.pickStatus;
+    current.submittedAt = pick.submitted_at || current.submittedAt;
+    current.picks.push({
+      categoryId: String(pick.category),
+      categoryName: category?.name || "Unknown category",
+      valueText: pick.value_text || null,
+      valueNumber: pick.value_number ?? null
+    });
+    existingByKey.set(key, current);
+  });
+
+  if (!importedEntries) {
+    return {
+      user: serializeAdminUser(userDoc),
+      rows: Array.from(existingByKey.values())
+        .sort((left, right) => new Date(right.raceDate).getTime() - new Date(left.raceDate).getTime())
+    };
+  }
+
+  const rows = (Array.isArray(importedEntries) ? importedEntries : []).map((entry) => {
+    const race = raceById.get(String(entry?.raceId || "")) || null;
+    const league = leagueById.get(String(entry?.leagueId || "")) || null;
+    const invalidCategories = [];
+    const importedPicks = (Array.isArray(entry?.picks) ? entry.picks : []).map((pick) => {
+      const categoryName = String(pick?.categoryName || "").trim();
+      const category = race ? categoryByRaceAndName.get(`${String(race._id)}:${categoryName.toLowerCase()}`) : null;
+      if (!category && categoryName) invalidCategories.push(categoryName);
+      return {
+        categoryId: category ? String(category._id) : null,
+        categoryName,
+        valueText: normalizeUserPredictionValueText(pick?.valueText),
+        valueNumber: normalizeUserPredictionValueNumber(pick?.valueNumber)
+      };
+    }).filter((pick) => pick.categoryName);
+
+    return buildUserPredictionBulkSummaryRow({
+      raceDoc: race,
+      leagueDoc: league,
+      existingEntry: existingByKey.get(`${String(entry?.raceId || "")}:${String(entry?.leagueId || "")}`) || null,
+      importedEntry: entry,
+      importedPicks,
+      missingRace: !race,
+      missingLeague: !league,
+      invalidCategories
+    });
+  });
+
+  return {
+    user: serializeAdminUser(userDoc),
+    rows
+  };
+}
+
+async function replaceUserPredictionEntry({ userId, row }) {
+  const { connectMongo } = await import("../mongo.js");
+  const Pick = (await import("../models/Pick.js")).default;
+  await connectMongo();
+
+  const pickStatus = row.pickStatus === "draft" ? "draft" : "submitted";
+  const submittedAt = pickStatus === "submitted"
+    ? new Date(row.submittedAt || Date.now())
+    : null;
+
+  await Pick.deleteMany({ user: userId, race: row.raceId, league: row.leagueId }).exec();
+  const docs = (row.importedPicks || []).map((pick) => ({
+    user: userId,
+    race: row.raceId,
+    league: row.leagueId,
+    category: pick.categoryId,
+    value_text: pick.valueText || null,
+    value_number: pick.valueNumber ?? null,
+    status: pickStatus,
+    submitted_at: submittedAt,
+    updated_at: new Date(),
+    created_at: new Date()
+  }));
+  if (docs.length > 0) {
+    await Pick.insertMany(docs);
+  }
 }
 
 function buildRaceCategories(
@@ -1875,22 +2211,154 @@ router.get("/users", async (_req, res) => {
     const User = (await import("../models/User.js")).default;
     await connectMongo();
     const users = await User.find({}, { password_hash: 0 }).sort({ created_at: -1 }).lean().exec();
-    return res.json(users.map((u) => ({ id: String(u._id), name: u.name, email: u.email, role: u.role, created_at: u.created_at })));
+    return res.json(users.map(serializeAdminUser));
   } catch (err) {
     console.error('List users failed', err);
     return res.status(500).json({ error: 'Failed to list users' });
   }
 });
 
+router.get("/bulk/users/export", async (_req, res) => {
+  try {
+    const { connectMongo } = await import("../mongo.js");
+    const User = (await import("../models/User.js")).default;
+    await connectMongo();
+    const users = await User.find({}, { password_hash: 0 }).sort({ created_at: -1 }).lean().exec();
+    return res.json({
+      version: USER_BULK_EXPORT_VERSION,
+      type: "admin-users",
+      exportedAt: new Date().toISOString(),
+      users: users.map(serializeAdminUser)
+    });
+  } catch (err) {
+    console.error("Export users failed", err);
+    return res.status(500).json({ error: "Failed to export users" });
+  }
+});
+
+router.post("/users", async (req, res) => {
+  let payload;
+  try {
+    payload = normalizeAdminUserInput(req.body, { allowBlankPassword: false, defaultEmailVerified: true });
+  } catch (err) {
+    return res.status(400).json({ error: err.message || "Invalid user payload" });
+  }
+
+  try {
+    const { connectMongo } = await import("../mongo.js");
+    const User = (await import("../models/User.js")).default;
+    await connectMongo();
+
+    const existing = await User.findOne({ email: payload.email }).lean().exec();
+    if (existing) return res.status(409).json({ error: "Email already in use" });
+
+    const created = await User.create({
+      name: payload.name,
+      email: payload.email,
+      password_hash: await bcrypt.hash(payload.password, 10),
+      role: payload.role,
+      email_verified_at: payload.emailVerified ? new Date() : null,
+      email_verification_token_hash: null,
+      email_verification_sent_at: null
+    });
+
+    return res.status(201).json(serializeAdminUser(created));
+  } catch (err) {
+    console.error("Create admin user failed", err);
+    return res.status(500).json({ error: "Failed to create user" });
+  }
+});
+
+router.post("/bulk/users", async (req, res) => {
+  const rows = Array.isArray(req.body?.users) ? req.body.users : null;
+  if (!rows || rows.length === 0) {
+    return res.status(400).json({ error: "users must be a non-empty array" });
+  }
+
+  try {
+    const { connectMongo } = await import("../mongo.js");
+    const User = (await import("../models/User.js")).default;
+    await connectMongo();
+
+    let created = 0;
+    let updated = 0;
+    const failures = [];
+
+    for (let index = 0; index < rows.length; index += 1) {
+      const raw = rows[index];
+      try {
+        const normalized = normalizeAdminUserInput(raw, { allowBlankPassword: true, defaultEmailVerified: true });
+        let existing = null;
+
+        if (normalized.id) {
+          existing = await User.findById(normalized.id).exec();
+        }
+        if (!existing) {
+          existing = await User.findOne({ email: normalized.email }).exec();
+        }
+
+        const emailOwner = await User.findOne({ email: normalized.email }).lean().exec();
+        if (emailOwner && (!existing || String(emailOwner._id) !== String(existing._id))) {
+          throw new Error("email already belongs to another user");
+        }
+
+        if (!existing) {
+          if (!normalized.password) {
+            throw new Error("password is required when creating a new user");
+          }
+
+          await User.create({
+            name: normalized.name,
+            email: normalized.email,
+            password_hash: await bcrypt.hash(normalized.password, 10),
+            role: normalized.role,
+            email_verified_at: normalized.emailVerified ? new Date() : null,
+            email_verification_token_hash: null,
+            email_verification_sent_at: null
+          });
+          created += 1;
+          continue;
+        }
+
+        existing.name = normalized.name;
+        existing.email = normalized.email;
+        existing.role = normalized.role;
+        existing.email_verified_at = normalized.emailVerified ? (existing.email_verified_at || new Date()) : null;
+        if (normalized.emailVerified) {
+          existing.email_verification_token_hash = null;
+          existing.email_verification_sent_at = null;
+        }
+        if (normalized.password) {
+          existing.password_hash = await bcrypt.hash(normalized.password, 10);
+        }
+        await existing.save();
+        updated += 1;
+      } catch (err) {
+        failures.push({
+          row: index + 1,
+          email: String(raw?.email || "").trim().toLowerCase() || null,
+          error: err.message || "Failed to import user"
+        });
+      }
+    }
+
+    return res.json({ created, updated, failed: failures.length, failures });
+  } catch (err) {
+    console.error("Bulk user import failed", err);
+    return res.status(500).json({ error: "Failed to import users" });
+  }
+});
+
 router.patch("/users/:userId", async (req, res) => {
   const { userId } = req.params;
-  const { name, email } = req.body || {};
+  const { name, email, emailVerified } = req.body || {};
+  const normalizedEmail = email ? String(email).trim().toLowerCase() : "";
 
-  if (!name && !email) {
+  if (!name && !email && emailVerified === undefined) {
     return res.status(400).json({ error: "Nothing to update" });
   }
 
-  if (email && !String(email).includes("@")) {
+  if (email && !isValidEmailAddress(normalizedEmail)) {
     return res.status(400).json({ error: "Invalid email" });
   }
 
@@ -1900,17 +2368,24 @@ router.patch("/users/:userId", async (req, res) => {
     await connectMongo();
 
     if (email) {
-      const existing = await User.findOne({ email, _id: { $ne: userId } }).lean().exec();
+      const existing = await User.findOne({ email: normalizedEmail, _id: { $ne: userId } }).lean().exec();
       if (existing) return res.status(409).json({ error: 'Email already in use' });
     }
 
     const updates = {};
-    if (name) updates.name = name;
-    if (email) updates.email = email;
+    if (name) updates.name = String(name).trim();
+    if (email) updates.email = normalizedEmail;
+    if (emailVerified !== undefined) {
+      updates.email_verified_at = emailVerified ? new Date() : null;
+      if (emailVerified) {
+        updates.email_verification_token_hash = null;
+        updates.email_verification_sent_at = null;
+      }
+    }
 
     const updated = await User.findByIdAndUpdate(userId, updates, { new: true }).lean().exec();
     if (!updated) return res.status(404).json({ error: 'User not found' });
-    return res.json({ id: String(updated._id), name: updated.name, email: updated.email, role: updated.role, created_at: updated.created_at });
+    return res.json(serializeAdminUser(updated));
   } catch (err) {
     console.error('Update user failed', err);
     return res.status(500).json({ error: 'Failed to update user' });
@@ -1929,10 +2404,144 @@ router.patch("/users/:userId/role", async (req, res) => {
     await connectMongo();
     const updated = await User.findByIdAndUpdate(userId, { role }, { new: true }).lean().exec();
     if (!updated) return res.status(404).json({ error: 'User not found' });
-    return res.json({ id: String(updated._id), name: updated.name, email: updated.email, role: updated.role });
+    return res.json(serializeAdminUser(updated));
   } catch (err) {
     console.error('Update user role failed', err);
     return res.status(500).json({ error: 'Failed to update user role' });
+  }
+});
+
+router.get("/users/:userId/predictions", async (req, res) => {
+  const { userId } = req.params;
+  const year = Number(req.query.year || new Date().getUTCFullYear());
+  if (!Number.isInteger(year) || year < 1950 || year > 2100) {
+    return res.status(400).json({ error: "year must be a valid season year" });
+  }
+
+  try {
+    const detail = await loadUserPredictionBulkRows({ userId, year });
+    return res.json({
+      version: 1,
+      type: "admin-user-predictions",
+      year,
+      user: detail.user,
+      races: detail.rows
+    });
+  } catch (err) {
+    console.error("Load admin user predictions failed", err);
+    return res.status(400).json({ error: err.message || "Failed to load user predictions" });
+  }
+});
+
+router.get("/bulk/user-predictions/export", async (req, res) => {
+  const userId = String(req.query.userId || "").trim();
+  const year = Number(req.query.year || new Date().getUTCFullYear());
+  if (!userId) {
+    return res.status(400).json({ error: "userId is required" });
+  }
+  if (!Number.isInteger(year) || year < 1950 || year > 2100) {
+    return res.status(400).json({ error: "year must be a valid season year" });
+  }
+
+  try {
+    const detail = await loadUserPredictionBulkRows({ userId, year });
+    return res.json({
+      version: 1,
+      type: "admin-user-predictions",
+      year,
+      exportedAt: new Date().toISOString(),
+      user: detail.user,
+      races: detail.rows
+    });
+  } catch (err) {
+    console.error("Export admin user predictions failed", err);
+    return res.status(400).json({ error: err.message || "Failed to export user predictions" });
+  }
+});
+
+router.post("/bulk/user-predictions/preview", async (req, res) => {
+  const payload = req.body || {};
+  const userId = String(payload.userId || "").trim();
+  const year = Number(payload.year || new Date().getUTCFullYear());
+  if (!userId) {
+    return res.status(400).json({ error: "userId is required" });
+  }
+  if (!Number.isInteger(year) || year < 1950 || year > 2100) {
+    return res.status(400).json({ error: "year must be a valid season year" });
+  }
+  if (!Array.isArray(payload.races)) {
+    return res.status(400).json({ error: "races must be an array" });
+  }
+
+  try {
+    const detail = await loadUserPredictionBulkRows({ userId, year, importedEntries: payload.races });
+    return res.json({
+      version: 1,
+      year,
+      user: detail.user,
+      applyModeDefault: "future-only",
+      summary: summarizeUserPredictionBulkPreview(detail.rows),
+      races: detail.rows
+    });
+  } catch (err) {
+    console.error("Preview admin user predictions failed", err);
+    return res.status(400).json({ error: err.message || "Failed to preview user predictions" });
+  }
+});
+
+router.post("/bulk/user-predictions/apply", async (req, res) => {
+  const payload = req.body || {};
+  const userId = String(payload.userId || "").trim();
+  const year = Number(payload.year || new Date().getUTCFullYear());
+  const includePastRaces = Boolean(payload.includePastRaces);
+  if (!userId) {
+    return res.status(400).json({ error: "userId is required" });
+  }
+  if (!Number.isInteger(year) || year < 1950 || year > 2100) {
+    return res.status(400).json({ error: "year must be a valid season year" });
+  }
+  if (!Array.isArray(payload.races)) {
+    return res.status(400).json({ error: "races must be an array" });
+  }
+
+  try {
+    const detail = await loadUserPredictionBulkRows({ userId, year, importedEntries: payload.races });
+    let updated = 0;
+    let skippedPastRaces = 0;
+    const failures = [];
+
+    for (const row of detail.rows) {
+      if (row.changes.length === 0) continue;
+      if (row.missingRace || row.missingLeague || row.changes.some((change) => change.type === "category-missing")) {
+        failures.push({ raceId: row.raceId, leagueId: row.leagueId, error: "Import references missing race, league, or category" });
+        continue;
+      }
+      if (row.hasOccurred && !includePastRaces) {
+        skippedPastRaces += 1;
+        continue;
+      }
+
+      try {
+        await replaceUserPredictionEntry({ userId, row });
+        updated += 1;
+      } catch (err) {
+        failures.push({
+          raceId: row.raceId,
+          leagueId: row.leagueId,
+          error: err.message || "Failed to apply imported user predictions"
+        });
+      }
+    }
+
+    return res.json({
+      updated,
+      skippedPastRaces,
+      failed: failures.length,
+      failures
+    });
+  } catch (err) {
+    console.error("Apply admin user predictions failed", err);
+    return res.status(400).json({ error: err.message || "Failed to apply user predictions" });
   }
 });
 
