@@ -160,6 +160,325 @@ function normalizeDriverRows(drivers) {
   return rows;
 }
 
+function normalizeCategoryUpdateDocs(categories, raceId) {
+  return (Array.isArray(categories) ? categories : []).map((category) => ({
+    race: raceId,
+    name: String(category?.name || "").trim(),
+    display_order: Number(category?.displayOrder ?? category?.display_order ?? 0) || 0,
+    is_position_based: Boolean(category?.isPositionBased ?? category?.is_position_based),
+    metadata: category?.metadata && typeof category.metadata === "object" ? category.metadata : {},
+    exact_points: Number(category?.exactPoints ?? category?.exact_points ?? 0) || 0,
+    partial_points: Number(category?.partialPoints ?? category?.partial_points ?? 0) || 0
+  })).filter((category) => category.name);
+}
+
+function sortObjectDeep(value) {
+  if (Array.isArray(value)) return value.map(sortObjectDeep);
+  if (!value || typeof value !== "object") return value;
+
+  return Object.keys(value)
+    .sort((left, right) => left.localeCompare(right))
+    .reduce((acc, key) => {
+      acc[key] = sortObjectDeep(value[key]);
+      return acc;
+    }, {});
+}
+
+function isSameMetadata(left, right) {
+  return JSON.stringify(sortObjectDeep(left || {})) === JSON.stringify(sortObjectDeep(right || {}));
+}
+
+function getRiskRank(level) {
+  if (level === "high") return 3;
+  if (level === "medium") return 2;
+  return 1;
+}
+
+function getHighestRiskLevel(changes) {
+  return (changes || []).reduce((current, change) => (
+    getRiskRank(change.riskLevel) > getRiskRank(current) ? change.riskLevel : current
+  ), "low");
+}
+
+function buildPredictionBulkSummaryRow(raceDoc, existingCategories, incomingCategories) {
+  const existingByName = new Map((existingCategories || []).map((category) => [String(category.name), category]));
+  const incomingByName = new Map((incomingCategories || []).map((category) => [String(category.name), category]));
+  const allNames = [...new Set([...existingByName.keys(), ...incomingByName.keys()])].sort((a, b) => a.localeCompare(b));
+
+  const changes = [];
+  for (const categoryName of allNames) {
+    const existing = existingByName.get(categoryName) || null;
+    const incoming = incomingByName.get(categoryName) || null;
+
+    if (!existing && incoming) {
+      changes.push({
+        type: "category-added",
+        categoryName,
+        riskLevel: (existingCategories || []).length > 0 ? "high" : "medium",
+        summary: `Add category '${categoryName}'`
+      });
+      continue;
+    }
+
+    if (existing && !incoming) {
+      changes.push({
+        type: "category-removed",
+        categoryName,
+        riskLevel: "high",
+        summary: `Remove category '${categoryName}'`
+      });
+      continue;
+    }
+
+    if (!existing || !incoming) continue;
+
+    if (Number(existing.exact_points || 0) !== Number(incoming.exact_points || 0)) {
+      changes.push({
+        type: "exact-points-updated",
+        categoryName,
+        riskLevel: "low",
+        from: Number(existing.exact_points || 0),
+        to: Number(incoming.exact_points || 0),
+        summary: `Exact points '${categoryName}' ${Number(existing.exact_points || 0)} -> ${Number(incoming.exact_points || 0)}`
+      });
+    }
+
+    if (Number(existing.partial_points || 0) !== Number(incoming.partial_points || 0)) {
+      changes.push({
+        type: "partial-points-updated",
+        categoryName,
+        riskLevel: "low",
+        from: Number(existing.partial_points || 0),
+        to: Number(incoming.partial_points || 0),
+        summary: `Partial points '${categoryName}' ${Number(existing.partial_points || 0)} -> ${Number(incoming.partial_points || 0)}`
+      });
+    }
+
+    if (Number(existing.display_order || 0) !== Number(incoming.display_order || 0)) {
+      changes.push({
+        type: "display-order-updated",
+        categoryName,
+        riskLevel: "low",
+        from: Number(existing.display_order || 0),
+        to: Number(incoming.display_order || 0),
+        summary: `Display order '${categoryName}' ${Number(existing.display_order || 0)} -> ${Number(incoming.display_order || 0)}`
+      });
+    }
+
+    if (Boolean(existing.is_position_based) !== Boolean(incoming.is_position_based)) {
+      changes.push({
+        type: "position-mode-updated",
+        categoryName,
+        riskLevel: "high",
+        from: Boolean(existing.is_position_based),
+        to: Boolean(incoming.is_position_based),
+        summary: `Position mode changed for '${categoryName}'`
+      });
+    }
+
+    if (!isSameMetadata(existing.metadata, incoming.metadata)) {
+      changes.push({
+        type: "metadata-updated",
+        categoryName,
+        riskLevel: "medium",
+        summary: `Metadata changed for '${categoryName}'`
+      });
+    }
+  }
+
+  const raceAt = new Date(raceDoc?.race_date).getTime();
+  const hasOccurred = Number.isFinite(raceAt) ? raceAt <= Date.now() : false;
+  const riskLevel = changes.length > 0 ? getHighestRiskLevel(changes) : "low";
+
+  return {
+    raceId: String(raceDoc?._id),
+    raceName: raceDoc?.name || "Unknown race",
+    raceDate: raceDoc?.race_date || null,
+    hasOccurred,
+    willApplyByDefault: changes.length > 0 && !hasOccurred,
+    riskLevel,
+    existingCategoryCount: (existingCategories || []).length,
+    incomingCategoryCount: (incomingCategories || []).length,
+    changes,
+    changeCounts: {
+      low: changes.filter((change) => change.riskLevel === "low").length,
+      medium: changes.filter((change) => change.riskLevel === "medium").length,
+      high: changes.filter((change) => change.riskLevel === "high").length
+    }
+  };
+}
+
+function summarizePredictionBulkPreview(rows) {
+  const changedRows = (rows || []).filter((row) => row.changes.length > 0);
+  return {
+    totalRaces: (rows || []).length,
+    changedRaces: changedRows.length,
+    futureRacesToApplyByDefault: changedRows.filter((row) => !row.hasOccurred).length,
+    pastRacesWithChanges: changedRows.filter((row) => row.hasOccurred).length,
+    lowRiskChanges: changedRows.reduce((total, row) => total + row.changeCounts.low, 0),
+    mediumRiskChanges: changedRows.reduce((total, row) => total + row.changeCounts.medium, 0),
+    highRiskChanges: changedRows.reduce((total, row) => total + row.changeCounts.high, 0)
+  };
+}
+
+async function upsertRaceCategories({ raceId, categories }) {
+  const { connectMongo } = await import("../mongo.js");
+  const PickCategory = (await import("../models/PickCategory.js")).default;
+  const Pick = (await import("../models/Pick.js")).default;
+  const Result = (await import("../models/Result.js")).default;
+  const Race = (await import("../models/Race.js")).default;
+  await connectMongo();
+
+  const docs = normalizeCategoryUpdateDocs(categories, raceId);
+  const existingCategories = await PickCategory.find({ race: raceId }).lean().exec();
+  const existingByName = new Map(existingCategories.map((category) => [String(category.name), category]));
+  const nextNames = new Set(docs.map((category) => String(category.name)));
+  const categoriesToRemove = existingCategories.filter((category) => !nextNames.has(String(category.name)));
+
+  if (categoriesToRemove.length > 0) {
+    const removableIds = categoriesToRemove.map((category) => category._id);
+    const removableIdStrings = categoriesToRemove.map((category) => String(category._id));
+    const [linkedPick, linkedResult] = await Promise.all([
+      Pick.exists({ race: raceId, category: { $in: removableIds } }).exec(),
+      Result.exists({ race: raceId, category: { $in: removableIdStrings } }).exec()
+    ]);
+
+    if (linkedPick || linkedResult) {
+      throw new Error("Cannot remove or rename prediction categories after players have saved picks or results exist. You can still update the points for the existing categories.");
+    }
+  }
+
+  const operations = docs.map(async (category) => {
+    const existing = existingByName.get(String(category.name));
+    if (existing) {
+      await PickCategory.updateOne(
+        { _id: existing._id },
+        {
+          $set: {
+            display_order: category.display_order,
+            is_position_based: category.is_position_based,
+            metadata: category.metadata,
+            exact_points: category.exact_points,
+            partial_points: category.partial_points
+          }
+        }
+      ).exec();
+      return existing._id;
+    }
+
+    const created = await PickCategory.create(category);
+    return created._id;
+  });
+
+  await Promise.all(operations);
+
+  if (categoriesToRemove.length > 0) {
+    await PickCategory.deleteMany({ _id: { $in: categoriesToRemove.map((category) => category._id) } }).exec();
+  }
+
+  const race = await Race.findById(raceId).lean().exec();
+  if (!race) throw new Error("Race not found");
+
+  const deadlineAt = await deriveDeadlineAtFromCategories({ race, categories: docs });
+  await Race.updateOne(
+    { _id: raceId },
+    {
+      $set: {
+        is_visible: docs.length > 0,
+        predictions_live: docs.length > 0 ? race.predictions_live !== false : false,
+        ...(deadlineAt ? { deadline_at: new Date(deadlineAt) } : {})
+      }
+    }
+  ).exec();
+
+  const hasResults = await Result.exists({ race: raceId }).exec();
+  let rescored = false;
+  if (hasResults) {
+    await calculateRaceScores(raceId);
+    rescored = true;
+  }
+
+  return {
+    message: rescored ? "Categories updated and scores recalculated" : "Categories updated",
+    rescored
+  };
+}
+
+async function loadPredictionBulkRows(year, importedRaces = null) {
+  const { connectMongo } = await import("../mongo.js");
+  const Race = (await import("../models/Race.js")).default;
+  const PickCategory = (await import("../models/PickCategory.js")).default;
+  await connectMongo();
+
+  const raceDocs = await Race.find({
+    race_date: { $gte: new Date(`${year}-01-01`), $lte: new Date(`${year}-12-31`) }
+  }).sort({ race_date: 1 }).lean().exec();
+
+  const categories = raceDocs.length > 0
+    ? await PickCategory.find({ race: { $in: raceDocs.map((race) => race._id) } }).sort({ race: 1, display_order: 1 }).lean().exec()
+    : [];
+
+  const categoriesByRaceId = new Map();
+  for (const category of categories) {
+    const key = String(category.race);
+    const list = categoriesByRaceId.get(key) || [];
+    list.push(category);
+    categoriesByRaceId.set(key, list);
+  }
+
+  if (!importedRaces) {
+    return raceDocs.map((race) => ({
+      raceId: String(race._id),
+      name: race.name,
+      raceDate: race.race_date,
+      deadlineAt: race.deadline_at,
+      status: race.status || null,
+      predictionsLive: race.predictions_live !== false,
+      categories: (categoriesByRaceId.get(String(race._id)) || []).map((category) => ({
+        name: category.name,
+        displayOrder: Number(category.display_order || 0),
+        isPositionBased: Boolean(category.is_position_based),
+        metadata: category.metadata && typeof category.metadata === "object" ? category.metadata : {},
+        exactPoints: Number(category.exact_points || 0),
+        partialPoints: Number(category.partial_points || 0)
+      }))
+    }));
+  }
+
+  const raceById = new Map(raceDocs.map((race) => [String(race._id), race]));
+  return (Array.isArray(importedRaces) ? importedRaces : []).map((entry) => {
+    const race = raceById.get(String(entry?.raceId || "")) || null;
+    const incomingCategories = normalizeCategoryUpdateDocs(entry?.categories || [], race?._id || entry?.raceId || "");
+    const existingCategories = race ? (categoriesByRaceId.get(String(race._id)) || []) : [];
+    if (!race) {
+      return {
+        raceId: String(entry?.raceId || ""),
+        raceName: String(entry?.name || "Unknown race"),
+        raceDate: entry?.raceDate || null,
+        hasOccurred: false,
+        willApplyByDefault: false,
+        riskLevel: "high",
+        existingCategoryCount: 0,
+        incomingCategoryCount: incomingCategories.length,
+        changes: [{
+          type: "race-missing",
+          categoryName: null,
+          riskLevel: "high",
+          summary: `Race '${String(entry?.name || entry?.raceId || "Unknown")}' was not found in ${year}`
+        }],
+        changeCounts: { low: 0, medium: 0, high: 1 },
+        missingRace: true,
+        incomingCategories
+      };
+    }
+
+    return {
+      ...buildPredictionBulkSummaryRow(race, existingCategories, incomingCategories),
+      incomingCategories
+    };
+  });
+}
+
 function buildRaceCategories(
   predictionOptions = [],
   hasSprintWeekend = false,
@@ -1220,6 +1539,105 @@ router.post("/bulk/races", async (req, res) => {
   return res.json({ created, failed: failures.length, failures });
 });
 
+router.get("/bulk/predictions/export", async (req, res) => {
+  const year = Number(req.query.year || new Date().getUTCFullYear());
+  if (!Number.isInteger(year) || year < 1950 || year > 2100) {
+    return res.status(400).json({ error: "year must be a valid season year" });
+  }
+
+  try {
+    const races = await loadPredictionBulkRows(year);
+    return res.json({
+      version: 1,
+      type: "race-prediction-config",
+      year,
+      exportedAt: new Date().toISOString(),
+      races
+    });
+  } catch (err) {
+    console.error("Export prediction bulk config failed", err);
+    return res.status(500).json({ error: "Failed to export prediction config" });
+  }
+});
+
+router.post("/bulk/predictions/preview", async (req, res) => {
+  const payload = req.body || {};
+  const year = Number(payload.year || payload?.seasonYear || new Date().getUTCFullYear());
+  if (!Number.isInteger(year) || year < 1950 || year > 2100) {
+    return res.status(400).json({ error: "year must be a valid season year" });
+  }
+
+  if (!Array.isArray(payload.races)) {
+    return res.status(400).json({ error: "races must be an array" });
+  }
+
+  try {
+    const rows = await loadPredictionBulkRows(year, payload.races);
+    return res.json({
+      version: 1,
+      year,
+      applyModeDefault: "future-only",
+      summary: summarizePredictionBulkPreview(rows),
+      races: rows
+    });
+  } catch (err) {
+    console.error("Preview prediction bulk config failed", err);
+    return res.status(500).json({ error: "Failed to preview prediction config changes" });
+  }
+});
+
+router.post("/bulk/predictions/apply", async (req, res) => {
+  const payload = req.body || {};
+  const year = Number(payload.year || payload?.seasonYear || new Date().getUTCFullYear());
+  const includePastRaces = Boolean(payload.includePastRaces);
+  if (!Number.isInteger(year) || year < 1950 || year > 2100) {
+    return res.status(400).json({ error: "year must be a valid season year" });
+  }
+
+  if (!Array.isArray(payload.races)) {
+    return res.status(400).json({ error: "races must be an array" });
+  }
+
+  try {
+    const previewRows = await loadPredictionBulkRows(year, payload.races);
+    const targets = previewRows.filter((row) => {
+      if (row.missingRace) return false;
+      if (!row.changes.length) return false;
+      if (!includePastRaces && row.hasOccurred) return false;
+      return true;
+    });
+
+    const failures = [];
+    let updated = 0;
+    let rescored = 0;
+
+    for (const row of targets) {
+      try {
+        const result = await upsertRaceCategories({ raceId: row.raceId, categories: row.incomingCategories });
+        updated += 1;
+        if (result.rescored) rescored += 1;
+      } catch (error) {
+        failures.push({ raceId: row.raceId, raceName: row.raceName, error: error.message });
+      }
+    }
+
+    return res.json({
+      message: "Prediction bulk import applied",
+      year,
+      applyMode: includePastRaces ? "all" : "future-only",
+      updated,
+      rescored,
+      skippedPastRaces: previewRows.filter((row) => row.hasOccurred && row.changes.length > 0 && !includePastRaces).length,
+      failed: failures.length,
+      failures,
+      summary: summarizePredictionBulkPreview(previewRows)
+    });
+  } catch (err) {
+    console.error("Apply prediction bulk config failed", err);
+    return res.status(500).json({ error: "Failed to apply prediction config changes" });
+  }
+});
+
 router.post("/bulk/race-drivers", async (req, res) => {
   const { uploads } = req.body;
   if (!Array.isArray(uploads) || uploads.length === 0) {
@@ -1361,100 +1779,11 @@ router.post("/races/:raceId/categories", async (req, res) => {
   const { categories } = req.body;
 
   try {
-    const { connectMongo } = await import("../mongo.js");
-    const PickCategory = (await import("../models/PickCategory.js")).default;
-    const Pick = (await import("../models/Pick.js")).default;
-    const Result = (await import("../models/Result.js")).default;
-    const Race = (await import("../models/Race.js")).default;
-    await connectMongo();
-
-    const docs = (Array.isArray(categories) ? categories : []).map((category) => ({
-      race: raceId,
-      name: category.name,
-      display_order: category.displayOrder,
-      is_position_based: Boolean(category.isPositionBased),
-      metadata: category.metadata && typeof category.metadata === "object" ? category.metadata : {},
-      exact_points: category.exactPoints || 0,
-      partial_points: category.partialPoints || 0
-    }));
-
-    const existingCategories = await PickCategory.find({ race: raceId }).lean().exec();
-    const existingByName = new Map(existingCategories.map((category) => [String(category.name), category]));
-    const nextNames = new Set(docs.map((category) => String(category.name)));
-    const categoriesToRemove = existingCategories.filter((category) => !nextNames.has(String(category.name)));
-
-    if (categoriesToRemove.length > 0) {
-      const removableIds = categoriesToRemove.map((category) => category._id);
-      const removableIdStrings = categoriesToRemove.map((category) => String(category._id));
-      const [linkedPick, linkedResult] = await Promise.all([
-        Pick.exists({ race: raceId, category: { $in: removableIds } }).exec(),
-        Result.exists({ race: raceId, category: { $in: removableIdStrings } }).exec()
-      ]);
-
-      if (linkedPick || linkedResult) {
-        return res.status(400).json({
-          error: "Cannot remove or rename prediction categories after players have saved picks or results exist. You can still update the points for the existing categories."
-        });
-      }
-    }
-
-    const operations = docs.map(async (category) => {
-      const existing = existingByName.get(String(category.name));
-      if (existing) {
-        await PickCategory.updateOne(
-          { _id: existing._id },
-          {
-            $set: {
-              display_order: category.display_order,
-              is_position_based: category.is_position_based,
-              metadata: category.metadata,
-              exact_points: category.exact_points,
-              partial_points: category.partial_points
-            }
-          }
-        ).exec();
-        return existing._id;
-      }
-
-      const created = await PickCategory.create(category);
-      return created._id;
-    });
-
-    await Promise.all(operations);
-
-    if (categoriesToRemove.length > 0) {
-      await PickCategory.deleteMany({ _id: { $in: categoriesToRemove.map((category) => category._id) } }).exec();
-    }
-
-    const race = await Race.findById(raceId).lean().exec();
-    if (!race) return res.status(404).json({ error: "Race not found" });
-
-    const deadlineAt = await deriveDeadlineAtFromCategories({ race, categories: docs });
-    await Race.updateOne(
-      { _id: raceId },
-      {
-        $set: {
-          is_visible: docs.length > 0,
-          predictions_live: docs.length > 0 ? race.predictions_live !== false : false,
-          ...(deadlineAt ? { deadline_at: new Date(deadlineAt) } : {})
-        }
-      }
-    ).exec();
-
-    const hasResults = await Result.exists({ race: raceId }).exec();
-    let rescored = false;
-    if (hasResults) {
-      await calculateRaceScores(raceId);
-      rescored = true;
-    }
-
-    return res.json({
-      message: rescored ? "Categories updated and scores recalculated" : "Categories updated",
-      rescored
-    });
+    const result = await upsertRaceCategories({ raceId, categories });
+    return res.json(result);
   } catch (err) {
-    console.error('Update categories failed', err);
-    return res.status(500).json({ error: 'Failed to update categories' });
+    console.error("Update categories failed", err);
+    return res.status(400).json({ error: err.message || "Failed to update categories" });
   }
 });
 

@@ -207,6 +207,75 @@ function readFileText(file) {
   });
 }
 
+function downloadJsonFile(fileName, payload) {
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = fileName;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+}
+
+function escapeCsvValue(value) {
+  const normalized = String(value ?? "");
+  if (!/[",\n]/.test(normalized)) return normalized;
+  return `"${normalized.replace(/"/g, '""')}"`;
+}
+
+function buildPredictionExportCsv(payload) {
+  const headers = [
+    "raceId",
+    "raceName",
+    "raceDate",
+    "deadlineAt",
+    "status",
+    "predictionsLive",
+    "categoryName",
+    "displayOrder",
+    "isPositionBased",
+    "exactPoints",
+    "partialPoints",
+    "metadataJson"
+  ];
+
+  const rows = [headers.join(",")];
+  (payload?.races || []).forEach((race) => {
+    (race.categories || []).forEach((category) => {
+      rows.push([
+        race.raceId,
+        race.name,
+        race.raceDate,
+        race.deadlineAt,
+        race.status,
+        race.predictionsLive,
+        category.name,
+        category.displayOrder,
+        category.isPositionBased,
+        category.exactPoints,
+        category.partialPoints,
+        JSON.stringify(category.metadata || {})
+      ].map(escapeCsvValue).join(","));
+    });
+  });
+
+  return rows.join("\n");
+}
+
+function downloadTextFile(fileName, content, mimeType) {
+  const blob = new Blob([content], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = fileName;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+}
+
 function normalizeDriverRows(drivers) {
   if (!Array.isArray(drivers)) return [];
   return drivers
@@ -315,6 +384,14 @@ export default function AdminPage() {
   const [predictionRaceId, setPredictionRaceId] = useState("");
   const [predictionRaceDetail, setPredictionRaceDetail] = useState(null);
   const [predictionMessage, setPredictionMessage] = useState("");
+  const [predictionBulkMessage, setPredictionBulkMessage] = useState("");
+  const [predictionBulkPreview, setPredictionBulkPreview] = useState(null);
+  const [predictionBulkPayload, setPredictionBulkPayload] = useState(null);
+  const [predictionBulkFileName, setPredictionBulkFileName] = useState("");
+  const [predictionBulkConfirmState, setPredictionBulkConfirmState] = useState({
+    isOpen: false,
+    includePastRaces: false
+  });
 
   const [syncSeason, setSyncSeason] = useState(String(currentYear));
   const [syncMessage, setSyncMessage] = useState("");
@@ -1327,6 +1404,114 @@ export default function AdminPage() {
     }
   }
 
+  async function exportPredictionConfigForYear() {
+    setPredictionBulkMessage("");
+
+    try {
+      const payload = await apiFetch(`/admin/bulk/predictions/export?year=${encodeURIComponent(predictionYear)}`);
+      downloadJsonFile(`prediction-config-${predictionYear}.json`, payload);
+      setPredictionBulkMessage(`Exported prediction config for ${predictionYear}.`);
+    } catch (err) {
+      setPredictionBulkMessage(err.message || "Failed to export prediction config.");
+    }
+  }
+
+  async function exportPredictionConfigCsvForYear() {
+    setPredictionBulkMessage("");
+
+    try {
+      const payload = await apiFetch(`/admin/bulk/predictions/export?year=${encodeURIComponent(predictionYear)}`);
+      downloadTextFile(`prediction-config-${predictionYear}.csv`, buildPredictionExportCsv(payload), "text/csv;charset=utf-8");
+      setPredictionBulkMessage(`Exported prediction config CSV for ${predictionYear}.`);
+    } catch (err) {
+      setPredictionBulkMessage(err.message || "Failed to export prediction config CSV.");
+    }
+  }
+
+  async function previewPredictionBulkFile(file) {
+    setPredictionBulkMessage("");
+    if (!file) return;
+
+    try {
+      const text = await readFileText(file);
+      const parsed = JSON.parse(text);
+      const payload = {
+        year: Number(parsed?.year || predictionYear),
+        races: Array.isArray(parsed?.races) ? parsed.races : []
+      };
+
+      if (!Array.isArray(payload.races) || payload.races.length === 0) {
+        setPredictionBulkMessage("Prediction import file must include a non-empty races array.");
+        return;
+      }
+
+      const preview = await apiFetch("/admin/bulk/predictions/preview", {
+        method: "POST",
+        body: JSON.stringify(payload)
+      });
+
+      setPredictionBulkPayload(payload);
+      setPredictionBulkPreview(preview);
+      setPredictionBulkFileName(file.name);
+      setPredictionBulkMessage(
+        preview.summary.changedRaces > 0
+          ? `Preview ready for ${preview.summary.changedRaces} changed races. Future races will update by default.`
+          : "No prediction changes detected in the imported file."
+      );
+    } catch (err) {
+      setPredictionBulkPayload(null);
+      setPredictionBulkPreview(null);
+      setPredictionBulkFileName("");
+      setPredictionBulkMessage(err.message || "Failed to preview prediction import file.");
+    }
+  }
+
+  async function runPredictionBulkImport(includePastRaces = false) {
+    if (!predictionBulkPayload || !predictionBulkPreview) {
+      setPredictionBulkMessage("Import a prediction config file first.");
+      return;
+    }
+
+    try {
+      const response = await apiFetch("/admin/bulk/predictions/apply", {
+        method: "POST",
+        body: JSON.stringify({ ...predictionBulkPayload, includePastRaces })
+      });
+
+      setPredictionBulkMessage(
+        `Prediction import applied: updated ${response.updated}, rescored ${response.rescored}, skipped past races ${response.skippedPastRaces}, failed ${response.failed}.`
+      );
+      setPredictionBulkPreview(null);
+      setPredictionBulkPayload(null);
+      setPredictionBulkFileName("");
+      setPredictionBulkConfirmState({ isOpen: false, includePastRaces: false });
+      await loadRaces();
+      if (predictionRaceId) {
+        await loadPredictionRaceDetail(predictionRaceId);
+      }
+    } catch (err) {
+      setPredictionBulkMessage(err.message || "Failed to apply prediction import.");
+    }
+  }
+
+  function requestPredictionBulkImport(includePastRaces = false) {
+    if (!predictionBulkPayload || !predictionBulkPreview) {
+      setPredictionBulkMessage("Import a prediction config file first.");
+      return;
+    }
+
+    const requiresModal = includePastRaces
+      ? predictionBulkPreview.summary.pastRacesWithChanges > 0 || predictionBulkPreview.summary.highRiskChanges > 0
+      : predictionBulkPreview.summary.highRiskChanges > 0;
+
+    if (!requiresModal) {
+      runPredictionBulkImport(includePastRaces);
+      return;
+    }
+
+    setPredictionBulkConfirmState({ isOpen: true, includePastRaces });
+  }
+
   async function handleBulkFile(type, file) {
     setBulkMessage("");
     if (!file) return;
@@ -1559,6 +1744,110 @@ export default function AdminPage() {
                 </select>
               </label>
             </div>
+          </div>
+
+          <div className="rounded-xl border border-white/20 bg-white/5 p-3 space-y-3">
+            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+              <div>
+                <p className="font-semibold text-slate-100">Bulk Prediction Config</p>
+                <p className="mt-1 text-xs text-slate-400">Export all races for a season year, edit the JSON, preview the change summary, then apply future races by default.</p>
+              </div>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    className="tap rounded-xl border border-white/30 px-4 py-2 font-bold text-slate-100"
+                    onClick={exportPredictionConfigForYear}
+                  >
+                    Export JSON
+                  </button>
+                  <button
+                    type="button"
+                    className="tap rounded-xl border border-white/30 px-4 py-2 font-bold text-slate-100"
+                    onClick={exportPredictionConfigCsvForYear}
+                  >
+                    Export CSV
+                  </button>
+                </div>
+            </div>
+
+            <div>
+              <input
+                type="file"
+                accept="application/json"
+                onChange={(e) => previewPredictionBulkFile(e.target.files?.[0])}
+              />
+              <p className="mt-2 text-xs text-slate-400">Import a previously exported JSON file after editing category points or prediction category definitions.</p>
+            </div>
+
+            {predictionBulkFileName ? (
+              <p className="text-xs text-slate-300">Previewing import file: {predictionBulkFileName}</p>
+            ) : null}
+
+            {predictionBulkPreview ? (
+              <div className="space-y-3 rounded-xl border border-white/10 bg-track-900/40 p-3">
+                <div className="grid gap-2 md:grid-cols-3">
+                  <div className="rounded-lg border border-white/10 bg-white/5 p-3">
+                    <p className="text-xs uppercase tracking-[0.2em] text-slate-400">Changed Races</p>
+                    <p className="mt-2 text-xl font-semibold text-white">{predictionBulkPreview.summary.changedRaces}</p>
+                  </div>
+                  <div className="rounded-lg border border-white/10 bg-white/5 p-3">
+                    <p className="text-xs uppercase tracking-[0.2em] text-slate-400">Future By Default</p>
+                    <p className="mt-2 text-xl font-semibold text-white">{predictionBulkPreview.summary.futureRacesToApplyByDefault}</p>
+                  </div>
+                  <div className="rounded-lg border border-white/10 bg-white/5 p-3">
+                    <p className="text-xs uppercase tracking-[0.2em] text-slate-400">Past Race Warnings</p>
+                    <p className="mt-2 text-xl font-semibold text-white">{predictionBulkPreview.summary.pastRacesWithChanges}</p>
+                  </div>
+                </div>
+
+                <div className="grid gap-2 md:grid-cols-3">
+                  <p className="rounded-lg border border-emerald-400/20 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-100">Low risk: {predictionBulkPreview.summary.lowRiskChanges}</p>
+                  <p className="rounded-lg border border-amber-400/20 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">Medium risk: {predictionBulkPreview.summary.mediumRiskChanges}</p>
+                  <p className="rounded-lg border border-red-400/20 bg-red-500/10 px-3 py-2 text-xs text-red-100">High risk: {predictionBulkPreview.summary.highRiskChanges}</p>
+                </div>
+
+                <div className="space-y-2 max-h-72 overflow-y-auto rounded-lg border border-white/10 bg-white/5 p-3">
+                  {predictionBulkPreview.races.filter((raceRow) => raceRow.changes.length > 0).map((raceRow) => (
+                    <div key={`bulk-preview-${raceRow.raceId}`} className="rounded-lg border border-white/10 p-3">
+                      <div className="flex flex-col gap-1 md:flex-row md:items-center md:justify-between">
+                        <p className="font-semibold text-slate-100">{raceRow.raceName}</p>
+                        <p className={`text-xs font-semibold ${raceRow.riskLevel === "high" ? "text-red-300" : raceRow.riskLevel === "medium" ? "text-amber-300" : "text-emerald-300"}`}>
+                          {raceRow.hasOccurred ? "Occurred race" : "Future race"} • {raceRow.riskLevel.toUpperCase()} risk
+                        </p>
+                      </div>
+                      <p className="mt-1 text-xs text-slate-400">{new Date(raceRow.raceDate).toLocaleString()} • {raceRow.willApplyByDefault ? "Will update by default" : "Needs explicit past-race approval or no changes"}</p>
+                      <ul className="mt-2 space-y-1 text-xs text-slate-300">
+                        {raceRow.changes.slice(0, 6).map((change, idx) => (
+                          <li key={`${raceRow.raceId}-${change.type}-${idx}`}>{change.summary}</li>
+                        ))}
+                        {raceRow.changes.length > 6 ? <li>...and {raceRow.changes.length - 6} more changes</li> : null}
+                      </ul>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    className="tap rounded-xl bg-accent-cyan px-4 py-2 font-bold text-track-900"
+                    onClick={() => requestPredictionBulkImport(false)}
+                    disabled={predictionBulkPreview.summary.futureRacesToApplyByDefault === 0}
+                  >
+                    Apply To Future Races
+                  </button>
+                  <button
+                    type="button"
+                    className="tap rounded-xl border border-amber-300/40 px-4 py-2 font-bold text-amber-100"
+                    onClick={() => requestPredictionBulkImport(true)}
+                    disabled={predictionBulkPreview.summary.changedRaces === 0}
+                  >
+                    Apply Including Past Races
+                  </button>
+                </div>
+              </div>
+            ) : null}
+
+            {predictionBulkMessage ? <p className="text-accent-gold">{predictionBulkMessage}</p> : null}
           </div>
 
           {predictionRaceDetail ? (
@@ -2267,6 +2556,85 @@ raceId,tieBreakerValue,categoryName,valueText,valueNumber
       ) : null}
 
       <BottomNav />
+
+      {predictionBulkConfirmState.isOpen && predictionBulkPreview ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 px-4">
+          <div className="w-full max-w-3xl rounded-3xl border border-white/15 bg-track-900 p-5 text-sm text-slate-200 shadow-2xl">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h3 className="font-display text-2xl text-accent-cyan">Confirm Prediction Import</h3>
+                <p className="mt-2 text-sm text-slate-300">
+                  {predictionBulkConfirmState.includePastRaces
+                    ? "This import includes races that have already happened. Review the summary before applying changes."
+                    : "This import contains high-risk changes. Review the summary before applying future-race updates."}
+                </p>
+              </div>
+              <button
+                type="button"
+                className="tap rounded-full border border-white/20 px-3 py-1 text-xs text-slate-300"
+                onClick={() => setPredictionBulkConfirmState({ isOpen: false, includePastRaces: false })}
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="mt-4 grid gap-2 md:grid-cols-4">
+              <div className="rounded-xl border border-white/10 bg-white/5 p-3">
+                <p className="text-xs uppercase tracking-[0.2em] text-slate-400">Changed Races</p>
+                <p className="mt-2 text-xl font-semibold text-white">{predictionBulkPreview.summary.changedRaces}</p>
+              </div>
+              <div className="rounded-xl border border-emerald-400/15 bg-emerald-500/10 p-3">
+                <p className="text-xs uppercase tracking-[0.2em] text-emerald-200">Low Risk</p>
+                <p className="mt-2 text-xl font-semibold text-white">{predictionBulkPreview.summary.lowRiskChanges}</p>
+              </div>
+              <div className="rounded-xl border border-amber-400/15 bg-amber-500/10 p-3">
+                <p className="text-xs uppercase tracking-[0.2em] text-amber-200">Medium Risk</p>
+                <p className="mt-2 text-xl font-semibold text-white">{predictionBulkPreview.summary.mediumRiskChanges}</p>
+              </div>
+              <div className="rounded-xl border border-red-400/15 bg-red-500/10 p-3">
+                <p className="text-xs uppercase tracking-[0.2em] text-red-200">High Risk</p>
+                <p className="mt-2 text-xl font-semibold text-white">{predictionBulkPreview.summary.highRiskChanges}</p>
+              </div>
+            </div>
+
+            <div className="mt-4 max-h-80 space-y-2 overflow-y-auto rounded-2xl border border-white/10 bg-white/5 p-3">
+              {predictionBulkPreview.races.filter((raceRow) => raceRow.changes.length > 0).map((raceRow) => (
+                <div key={`prediction-confirm-${raceRow.raceId}`} className="rounded-xl border border-white/10 p-3">
+                  <div className="flex flex-col gap-1 md:flex-row md:items-center md:justify-between">
+                    <p className="font-semibold text-slate-100">{raceRow.raceName}</p>
+                    <p className={`text-xs font-semibold ${raceRow.riskLevel === "high" ? "text-red-300" : raceRow.riskLevel === "medium" ? "text-amber-300" : "text-emerald-300"}`}>
+                      {raceRow.hasOccurred ? "Occurred race" : "Future race"} • {raceRow.riskLevel.toUpperCase()} risk
+                    </p>
+                  </div>
+                  <p className="mt-1 text-xs text-slate-400">{new Date(raceRow.raceDate).toLocaleString()}</p>
+                  <ul className="mt-2 space-y-1 text-xs text-slate-300">
+                    {raceRow.changes.map((change, idx) => (
+                      <li key={`${raceRow.raceId}-${change.type}-${idx}`}>{change.summary}</li>
+                    ))}
+                  </ul>
+                </div>
+              ))}
+            </div>
+
+            <div className="mt-4 flex flex-wrap gap-2">
+              <button
+                type="button"
+                className="tap rounded-xl border border-white/20 px-4 py-2 font-bold text-slate-200"
+                onClick={() => setPredictionBulkConfirmState({ isOpen: false, includePastRaces: false })}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className={`tap rounded-xl px-4 py-2 font-bold ${predictionBulkConfirmState.includePastRaces ? "bg-amber-500 text-track-900" : "bg-accent-cyan text-track-900"}`}
+                onClick={() => runPredictionBulkImport(predictionBulkConfirmState.includePastRaces)}
+              >
+                {predictionBulkConfirmState.includePastRaces ? "Confirm Apply Including Past Races" : "Confirm Apply To Future Races"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
