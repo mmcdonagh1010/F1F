@@ -60,6 +60,28 @@ const EMPTY_PREDICTION_PREVIEW = {
   driverOfWeekend: "",
   teamOfWeekend: ""
 };
+const PREDICTION_CONFIG_CSV_HEADERS = [
+  "raceId",
+  "raceName",
+  "circuitName",
+  "externalRound",
+  "raceDate",
+  "deadlineAt",
+  "status",
+  "isVisible",
+  "predictionsLive",
+  "hasSprintWeekend",
+  "hasConfiguredCategories",
+  "categoryCount",
+  "categoryName",
+  "displayOrder",
+  "isPositionBased",
+  "exactPoints",
+  "partialPoints",
+  "metadataJson"
+];
+const PREDICTION_IMPORT_REQUIRED_JSON_HINT = 'Required JSON shape: { "year": 2026, "races": [{ "raceId": "...", "name": "Australian Grand Prix", "raceDate": "2026-03-08T04:00:00.000Z", "deadlineAt": "2026-03-08T03:00:00.000Z", "categories": [{ "name": "Race Result P1", "displayOrder": 1, "isPositionBased": true, "exactPoints": 5, "partialPoints": 1, "metadata": {} }] }] }';
+const PREDICTION_IMPORT_REQUIRED_CSV_HINT = `Required CSV columns: ${PREDICTION_CONFIG_CSV_HEADERS.join(", ")}. Use the exported prediction CSV template and keep one row per category, or one blank category row when a race has no configured categories.`;
 
 function buildDefaultOptionPoints() {
   return Object.fromEntries(
@@ -128,6 +150,264 @@ function parseCsvObjects(text) {
     });
     return row;
   });
+}
+
+function parseCsvObjectsWithLineNumbers(text) {
+  const rawLines = String(text || "").split(/\r?\n/);
+  const nonEmptyLines = rawLines
+    .map((line, index) => ({ line, lineNumber: index + 1 }))
+    .filter(({ line }) => line.trim().length > 0);
+
+  if (nonEmptyLines.length < 2) {
+    return { headers: [], rows: [] };
+  }
+
+  const headerLine = nonEmptyLines[0];
+  const headers = parseCsvLine(headerLine.line.replace(/^\uFEFF/, "").trim()).map((header) => header.trim());
+  const rows = nonEmptyLines.slice(1).map(({ line, lineNumber }) => {
+    const values = parseCsvLine(line.trim());
+    const row = {};
+    headers.forEach((header, idx) => {
+      row[header] = values[idx] ?? "";
+    });
+    return { lineNumber, row };
+  });
+
+  return { headers, rows };
+}
+
+function buildPredictionImportError(message, hint) {
+  return new Error(hint ? `${message} ${hint}` : message);
+}
+
+function parseStrictBoolean(value, fieldName, location, fallback = null) {
+  if (value === undefined || value === null || value === "") return fallback;
+  const normalized = String(value).trim().toLowerCase();
+  if (["true", "1", "yes", "on"].includes(normalized)) return true;
+  if (["false", "0", "no", "off"].includes(normalized)) return false;
+  throw buildPredictionImportError(`${location}: '${fieldName}' must be true or false.`, PREDICTION_IMPORT_REQUIRED_CSV_HINT);
+}
+
+function parseStrictInteger(value, fieldName, location, { allowBlank = false, minimum = 0 } = {}) {
+  if (value === undefined || value === null || value === "") {
+    if (allowBlank) return null;
+    throw buildPredictionImportError(`${location}: '${fieldName}' is required.`, PREDICTION_IMPORT_REQUIRED_CSV_HINT);
+  }
+
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < minimum) {
+    throw buildPredictionImportError(`${location}: '${fieldName}' must be an integer${minimum > 0 ? ` >= ${minimum}` : ""}.`, PREDICTION_IMPORT_REQUIRED_CSV_HINT);
+  }
+  return parsed;
+}
+
+function parseStrictDate(value, fieldName, location) {
+  if (!value) {
+    throw buildPredictionImportError(`${location}: '${fieldName}' is required.`, PREDICTION_IMPORT_REQUIRED_CSV_HINT);
+  }
+
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    throw buildPredictionImportError(`${location}: '${fieldName}' must be a valid ISO date/time value.`, PREDICTION_IMPORT_REQUIRED_CSV_HINT);
+  }
+
+  return parsed.toISOString();
+}
+
+function parsePredictionCsvPayload(text, fallbackYear) {
+  const { headers, rows } = parseCsvObjectsWithLineNumbers(text);
+  if (headers.length === 0 || rows.length === 0) {
+    throw buildPredictionImportError("Prediction CSV import must include a header row and at least one data row.", PREDICTION_IMPORT_REQUIRED_CSV_HINT);
+  }
+
+  const missingHeaders = PREDICTION_CONFIG_CSV_HEADERS.filter((header) => !headers.includes(header));
+  if (missingHeaders.length > 0) {
+    throw buildPredictionImportError(`Prediction CSV import is missing required columns: ${missingHeaders.join(", ")}.`, PREDICTION_IMPORT_REQUIRED_CSV_HINT);
+  }
+
+  const races = [];
+  const raceMap = new Map();
+  const years = new Set();
+
+  rows.forEach(({ lineNumber, row }) => {
+    const location = `CSV row ${lineNumber}`;
+    const raceId = String(row.raceId || "").trim();
+    const raceName = String(row.raceName || "").trim();
+    if (!raceId) {
+      throw buildPredictionImportError(`${location}: 'raceId' is required.`, PREDICTION_IMPORT_REQUIRED_CSV_HINT);
+    }
+    if (!raceName) {
+      throw buildPredictionImportError(`${location}: 'raceName' is required.`, PREDICTION_IMPORT_REQUIRED_CSV_HINT);
+    }
+
+    const raceDate = parseStrictDate(row.raceDate, "raceDate", location);
+    const deadlineAt = parseStrictDate(row.deadlineAt, "deadlineAt", location);
+    years.add(new Date(raceDate).getUTCFullYear());
+
+    let race = raceMap.get(raceId);
+    if (!race) {
+      race = {
+        raceId,
+        name: raceName,
+        circuitName: String(row.circuitName || "").trim() || null,
+        externalRound: row.externalRound === "" ? null : parseStrictInteger(row.externalRound, "externalRound", location, { allowBlank: true, minimum: 1 }),
+        raceDate,
+        deadlineAt,
+        status: String(row.status || "").trim() || null,
+        isVisible: parseStrictBoolean(row.isVisible, "isVisible", location, true),
+        predictionsLive: parseStrictBoolean(row.predictionsLive, "predictionsLive", location, true),
+        hasSprintWeekend: parseStrictBoolean(row.hasSprintWeekend, "hasSprintWeekend", location, false),
+        categories: []
+      };
+      raceMap.set(raceId, race);
+      races.push(race);
+    } else {
+      const conflictingField = [
+        ["raceName", race.name, raceName],
+        ["raceDate", race.raceDate, raceDate],
+        ["deadlineAt", race.deadlineAt, deadlineAt]
+      ].find(([, existingValue, nextValue]) => existingValue !== nextValue);
+
+      if (conflictingField) {
+        throw buildPredictionImportError(`${location}: '${conflictingField[0]}' does not match earlier rows for race '${raceId}'.`, PREDICTION_IMPORT_REQUIRED_CSV_HINT);
+      }
+    }
+
+    const hasCategoryName = String(row.categoryName || "").trim().length > 0;
+    const hasCategoryFields = [row.displayOrder, row.isPositionBased, row.exactPoints, row.partialPoints, row.metadataJson]
+      .some((value) => value !== undefined && value !== null && String(value).trim() !== "");
+    const hasConfiguredCategories = parseStrictBoolean(row.hasConfiguredCategories, "hasConfiguredCategories", location, hasCategoryName);
+
+    if (!hasCategoryName) {
+      if (hasCategoryFields) {
+        throw buildPredictionImportError(`${location}: category fields are populated but 'categoryName' is blank.`, PREDICTION_IMPORT_REQUIRED_CSV_HINT);
+      }
+      if (hasConfiguredCategories) {
+        throw buildPredictionImportError(`${location}: 'hasConfiguredCategories' is true but no category row was provided.`, PREDICTION_IMPORT_REQUIRED_CSV_HINT);
+      }
+      return;
+    }
+
+    let metadata = {};
+    const metadataText = String(row.metadataJson || "").trim();
+    if (metadataText) {
+      try {
+        metadata = JSON.parse(metadataText);
+      } catch {
+        throw buildPredictionImportError(`${location}: 'metadataJson' must contain valid JSON.`, PREDICTION_IMPORT_REQUIRED_CSV_HINT);
+      }
+
+      if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) {
+        throw buildPredictionImportError(`${location}: 'metadataJson' must be a JSON object.`, PREDICTION_IMPORT_REQUIRED_CSV_HINT);
+      }
+    }
+
+    race.categories.push({
+      name: String(row.categoryName).trim(),
+      displayOrder: parseStrictInteger(row.displayOrder, "displayOrder", location, { minimum: 0 }),
+      isPositionBased: parseStrictBoolean(row.isPositionBased, "isPositionBased", location, false),
+      exactPoints: parseStrictInteger(row.exactPoints, "exactPoints", location, { minimum: 0 }),
+      partialPoints: parseStrictInteger(row.partialPoints, "partialPoints", location, { minimum: 0 }),
+      metadata
+    });
+  });
+
+  if (races.length === 0) {
+    throw buildPredictionImportError("Prediction CSV import did not contain any valid race rows.", PREDICTION_IMPORT_REQUIRED_CSV_HINT);
+  }
+
+  if (years.size > 1) {
+    throw buildPredictionImportError(`Prediction CSV import spans multiple season years (${Array.from(years).sort().join(", ")}). Export and import one season year at a time.`, PREDICTION_IMPORT_REQUIRED_CSV_HINT);
+  }
+
+  const year = years.size === 1 ? Array.from(years)[0] : Number(fallbackYear);
+  if (!Number.isInteger(year)) {
+    throw buildPredictionImportError("Prediction CSV import could not determine the season year.", PREDICTION_IMPORT_REQUIRED_CSV_HINT);
+  }
+
+  return { year, races };
+}
+
+function normalizePredictionJsonPayload(parsed, fallbackYear) {
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw buildPredictionImportError("Prediction import JSON must be an object.", PREDICTION_IMPORT_REQUIRED_JSON_HINT);
+  }
+
+  const year = Number(parsed?.year || fallbackYear);
+  if (!Number.isInteger(year) || year < 1950 || year > 2100) {
+    throw buildPredictionImportError("Prediction import JSON must include a valid season year.", PREDICTION_IMPORT_REQUIRED_JSON_HINT);
+  }
+
+  if (!Array.isArray(parsed.races) || parsed.races.length === 0) {
+    throw buildPredictionImportError("Prediction import JSON must include a non-empty 'races' array.", PREDICTION_IMPORT_REQUIRED_JSON_HINT);
+  }
+
+  return {
+    year,
+    races: parsed.races.map((race, raceIndex) => {
+      const location = `JSON races[${raceIndex}]`;
+      const raceId = String(race?.raceId || "").trim();
+      const name = String(race?.name || race?.raceName || "").trim();
+      if (!raceId) {
+        throw buildPredictionImportError(`${location}: 'raceId' is required.`, PREDICTION_IMPORT_REQUIRED_JSON_HINT);
+      }
+      if (!name) {
+        throw buildPredictionImportError(`${location}: 'name' is required.`, PREDICTION_IMPORT_REQUIRED_JSON_HINT);
+      }
+
+      if (!Array.isArray(race?.categories)) {
+        throw buildPredictionImportError(`${location}: 'categories' must be an array.`, PREDICTION_IMPORT_REQUIRED_JSON_HINT);
+      }
+
+      return {
+        raceId,
+        name,
+        circuitName: race?.circuitName || null,
+        externalRound: race?.externalRound ?? null,
+        raceDate: race?.raceDate || null,
+        deadlineAt: race?.deadlineAt || null,
+        status: race?.status || null,
+        isVisible: typeof race?.isVisible === "boolean" ? race.isVisible : true,
+        predictionsLive: typeof race?.predictionsLive === "boolean" ? race.predictionsLive : true,
+        hasSprintWeekend: Boolean(race?.hasSprintWeekend),
+        categories: race.categories.map((category, categoryIndex) => {
+          const categoryLocation = `${location}.categories[${categoryIndex}]`;
+          const categoryName = String(category?.name || "").trim();
+          if (!categoryName) {
+            throw buildPredictionImportError(`${categoryLocation}: 'name' is required.`, PREDICTION_IMPORT_REQUIRED_JSON_HINT);
+          }
+
+          const displayOrder = Number(category?.displayOrder);
+          const exactPoints = Number(category?.exactPoints);
+          const partialPoints = Number(category?.partialPoints);
+          if (!Number.isFinite(displayOrder) || displayOrder < 0) {
+            throw buildPredictionImportError(`${categoryLocation}: 'displayOrder' must be a number >= 0.`, PREDICTION_IMPORT_REQUIRED_JSON_HINT);
+          }
+          if (typeof category?.isPositionBased !== "boolean") {
+            throw buildPredictionImportError(`${categoryLocation}: 'isPositionBased' must be true or false.`, PREDICTION_IMPORT_REQUIRED_JSON_HINT);
+          }
+          if (!Number.isFinite(exactPoints) || exactPoints < 0) {
+            throw buildPredictionImportError(`${categoryLocation}: 'exactPoints' must be a number >= 0.`, PREDICTION_IMPORT_REQUIRED_JSON_HINT);
+          }
+          if (!Number.isFinite(partialPoints) || partialPoints < 0) {
+            throw buildPredictionImportError(`${categoryLocation}: 'partialPoints' must be a number >= 0.`, PREDICTION_IMPORT_REQUIRED_JSON_HINT);
+          }
+          if (category?.metadata !== undefined && (!category.metadata || typeof category.metadata !== "object" || Array.isArray(category.metadata))) {
+            throw buildPredictionImportError(`${categoryLocation}: 'metadata' must be a JSON object.`, PREDICTION_IMPORT_REQUIRED_JSON_HINT);
+          }
+
+          return {
+            name: categoryName,
+            displayOrder,
+            isPositionBased: category.isPositionBased,
+            exactPoints,
+            partialPoints,
+            metadata: category?.metadata || {}
+          };
+        })
+      };
+    })
+  };
 }
 
 function parseCsvBulkPayload(type, text) {
@@ -244,28 +524,7 @@ function escapeCsvValue(value) {
 }
 
 function buildPredictionExportCsv(payload) {
-  const headers = [
-    "raceId",
-    "raceName",
-    "circuitName",
-    "externalRound",
-    "raceDate",
-    "deadlineAt",
-    "status",
-    "isVisible",
-    "predictionsLive",
-    "hasSprintWeekend",
-    "hasConfiguredCategories",
-    "categoryCount",
-    "categoryName",
-    "displayOrder",
-    "isPositionBased",
-    "exactPoints",
-    "partialPoints",
-    "metadataJson"
-  ];
-
-  const rows = [headers.join(",")];
+  const rows = [PREDICTION_CONFIG_CSV_HEADERS.join(",")];
   (payload?.races || []).forEach((race) => {
     const categoryRows = Array.isArray(race.categories) && race.categories.length > 0
       ? race.categories
@@ -424,6 +683,7 @@ export default function AdminPage() {
   const [predictionBulkPreview, setPredictionBulkPreview] = useState(null);
   const [predictionBulkPayload, setPredictionBulkPayload] = useState(null);
   const [predictionBulkFileName, setPredictionBulkFileName] = useState("");
+  const [predictionBulkInputKey, setPredictionBulkInputKey] = useState(0);
   const [predictionExportIncludeEmptyRaces, setPredictionExportIncludeEmptyRaces] = useState(true);
   const [predictionBulkConfirmState, setPredictionBulkConfirmState] = useState({
     isOpen: false,
@@ -1515,21 +1775,37 @@ export default function AdminPage() {
     }
   }
 
+  function clearPredictionBulkImport(message = "") {
+    setPredictionBulkPayload(null);
+    setPredictionBulkPreview(null);
+    setPredictionBulkFileName("");
+    setPredictionBulkConfirmState({ isOpen: false, includePastRaces: false });
+    setPredictionBulkInputKey((current) => current + 1);
+    setPredictionBulkMessage(message);
+  }
+
   async function previewPredictionBulkFile(file) {
     setPredictionBulkMessage("");
     if (!file) return;
 
     try {
       const text = await readFileText(file);
-      const parsed = JSON.parse(text);
-      const payload = {
-        year: Number(parsed?.year || predictionYear),
-        races: Array.isArray(parsed?.races) ? parsed.races : []
-      };
+      const lowerName = String(file.name || "").toLowerCase();
+      let payload = null;
 
-      if (!Array.isArray(payload.races) || payload.races.length === 0) {
-        setPredictionBulkMessage("Prediction import file must include a non-empty races array.");
-        return;
+      if (lowerName.endsWith(".json")) {
+        try {
+          payload = normalizePredictionJsonPayload(JSON.parse(text), predictionYear);
+        } catch (err) {
+          if (err instanceof SyntaxError) {
+            throw buildPredictionImportError("Prediction import JSON is invalid and could not be parsed.", PREDICTION_IMPORT_REQUIRED_JSON_HINT);
+          }
+          throw err;
+        }
+      } else if (lowerName.endsWith(".csv")) {
+        payload = parsePredictionCsvPayload(text, predictionYear);
+      } else {
+        throw buildPredictionImportError("Prediction import file must be a .json or .csv export.", `${PREDICTION_IMPORT_REQUIRED_JSON_HINT} ${PREDICTION_IMPORT_REQUIRED_CSV_HINT}`);
       }
 
       const preview = await apiFetch("/admin/bulk/predictions/preview", {
@@ -1546,10 +1822,7 @@ export default function AdminPage() {
           : "No prediction changes detected in the imported file."
       );
     } catch (err) {
-      setPredictionBulkPayload(null);
-      setPredictionBulkPreview(null);
-      setPredictionBulkFileName("");
-      setPredictionBulkMessage(err.message || "Failed to preview prediction import file.");
+      clearPredictionBulkImport(err.message || "Failed to preview prediction import file.");
     }
   }
 
@@ -1565,13 +1838,9 @@ export default function AdminPage() {
         body: JSON.stringify({ ...predictionBulkPayload, includePastRaces })
       });
 
-      setPredictionBulkMessage(
+      clearPredictionBulkImport(
         `Prediction import applied: updated ${response.updated}, rescored ${response.rescored}, skipped past races ${response.skippedPastRaces}, failed ${response.failed}.`
       );
-      setPredictionBulkPreview(null);
-      setPredictionBulkPayload(null);
-      setPredictionBulkFileName("");
-      setPredictionBulkConfirmState({ isOpen: false, includePastRaces: false });
       await loadRaces();
       if (predictionRaceId) {
         await loadPredictionRaceDetail(predictionRaceId);
@@ -1881,11 +2150,12 @@ export default function AdminPage() {
 
             <div>
               <input
+                key={predictionBulkInputKey}
                 type="file"
-                accept="application/json"
+                accept=".json,.csv,application/json,text/csv"
                 onChange={(e) => previewPredictionBulkFile(e.target.files?.[0])}
               />
-              <p className="mt-2 text-xs text-slate-400">Import a previously exported JSON file after editing category points or prediction category definitions. CSV export is for offline review and spreadsheet editing support.</p>
+              <p className="mt-2 text-xs text-slate-400">Import a previously exported JSON or CSV file after editing category points or prediction category definitions. If the format is invalid, the app will highlight the row or JSON item that needs fixing and show the required structure.</p>
             </div>
 
             {predictionBulkFileName ? (
@@ -1951,6 +2221,13 @@ export default function AdminPage() {
                     disabled={predictionBulkPreview.summary.changedRaces === 0}
                   >
                     Apply Including Past Races
+                  </button>
+                  <button
+                    type="button"
+                    className="tap rounded-xl border border-white/20 px-4 py-2 font-bold text-slate-200"
+                    onClick={() => clearPredictionBulkImport("Prediction import cancelled.")}
+                  >
+                    Cancel Import
                   </button>
                 </div>
               </div>
@@ -2765,7 +3042,14 @@ raceId,tieBreakerValue,categoryName,valueText,valueNumber
                 className="tap rounded-xl border border-white/20 px-4 py-2 font-bold text-slate-200"
                 onClick={() => setPredictionBulkConfirmState({ isOpen: false, includePastRaces: false })}
               >
-                Cancel
+                Back To Preview
+              </button>
+              <button
+                type="button"
+                className="tap rounded-xl border border-red-300/30 px-4 py-2 font-bold text-red-100"
+                onClick={() => clearPredictionBulkImport("Prediction import cancelled.")}
+              >
+                Discard Import
               </button>
               <button
                 type="button"
