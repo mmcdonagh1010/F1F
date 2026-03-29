@@ -1120,34 +1120,35 @@ export default function AdminPage() {
     return Object.values(source).sort((a, b) => String(a.label || a.entityId).localeCompare(String(b.label || b.entityId)));
   }, [mediaOverrides, mediaType]);
 
+  async function loadUsers() {
+    try {
+      const data = await apiFetch("/admin/users");
+      setUsers(data);
+      if (!selectedUserPredictionUserId && data[0]?.id) {
+        setSelectedUserPredictionUserId(data[0].id);
+      }
+    } catch (err) {
+      setUserMessage(String(err.message || err));
+      setUsers([]);
+    }
+  }
+
+  async function loadUserPredictionDetail(userId = selectedUserPredictionUserId, year = userPredictionYear) {
+    if (!userId) {
+      setUserPredictionDetail(null);
+      return;
+    }
+
+    try {
+      const detail = await apiFetch(`/admin/users/${userId}/predictions?year=${encodeURIComponent(year)}`);
+      setUserPredictionDetail(detail);
+    } catch (err) {
+      setUserPredictionDetail(null);
+      setUserPredictionMessage(String(err.message || err));
+    }
+  }
+
   async function loadRaces() {
-      async function loadUsers() {
-        try {
-          const data = await apiFetch("/admin/users");
-          setUsers(data);
-          if (!selectedUserPredictionUserId && data[0]?.id) {
-            setSelectedUserPredictionUserId(data[0].id);
-          }
-        } catch (err) {
-          setUserMessage(String(err.message || err));
-          setUsers([]);
-        }
-      }
-
-      async function loadUserPredictionDetail(userId = selectedUserPredictionUserId, year = userPredictionYear) {
-        if (!userId) {
-          setUserPredictionDetail(null);
-          return;
-        }
-
-        try {
-          const detail = await apiFetch(`/admin/users/${userId}/predictions?year=${encodeURIComponent(year)}`);
-          setUserPredictionDetail(detail);
-        } catch (err) {
-          setUserPredictionDetail(null);
-          setUserPredictionMessage(String(err.message || err));
-        }
-      }
     try {
       const data = await apiFetch("/races");
       setAllRaces(data);
