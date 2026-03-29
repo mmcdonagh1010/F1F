@@ -321,6 +321,14 @@ function summarizePredictionBulkPreview(rows) {
   };
 }
 
+function parseIncludeEmptyRaces(value, fallback = true) {
+  if (value === undefined || value === null || value === "") return fallback;
+  const normalized = String(value).trim().toLowerCase();
+  if (["false", "0", "no", "off"].includes(normalized)) return false;
+  if (["true", "1", "yes", "on"].includes(normalized)) return true;
+  return fallback;
+}
+
 async function upsertRaceCategories({ raceId, categories }) {
   const { connectMongo } = await import("../mongo.js");
   const PickCategory = (await import("../models/PickCategory.js")).default;
@@ -430,10 +438,14 @@ async function loadPredictionBulkRows(year, importedRaces = null) {
     return raceDocs.map((race) => ({
       raceId: String(race._id),
       name: race.name,
+      circuitName: race.circuit_name || null,
+      externalRound: race.external_round || null,
       raceDate: race.race_date,
       deadlineAt: race.deadline_at,
       status: race.status || null,
+      isVisible: Boolean(race.is_visible),
       predictionsLive: race.predictions_live !== false,
+      hasSprintWeekend: Boolean(race.has_sprint_weekend),
       categories: (categoriesByRaceId.get(String(race._id)) || []).map((category) => ({
         name: category.name,
         displayOrder: Number(category.display_order || 0),
@@ -1541,17 +1553,22 @@ router.post("/bulk/races", async (req, res) => {
 
 router.get("/bulk/predictions/export", async (req, res) => {
   const year = Number(req.query.year || new Date().getUTCFullYear());
+  const includeEmptyRaces = parseIncludeEmptyRaces(req.query.includeEmptyRaces, true);
   if (!Number.isInteger(year) || year < 1950 || year > 2100) {
     return res.status(400).json({ error: "year must be a valid season year" });
   }
 
   try {
-    const races = await loadPredictionBulkRows(year);
+    const races = (await loadPredictionBulkRows(year)).filter((race) => {
+      if (includeEmptyRaces) return true;
+      return Array.isArray(race.categories) && race.categories.length > 0;
+    });
     return res.json({
       version: 1,
       type: "race-prediction-config",
       year,
       exportedAt: new Date().toISOString(),
+      includeEmptyRaces,
       races
     });
   } catch (err) {

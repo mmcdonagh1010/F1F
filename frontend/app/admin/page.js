@@ -247,10 +247,16 @@ function buildPredictionExportCsv(payload) {
   const headers = [
     "raceId",
     "raceName",
+    "circuitName",
+    "externalRound",
     "raceDate",
     "deadlineAt",
     "status",
+    "isVisible",
     "predictionsLive",
+    "hasSprintWeekend",
+    "hasConfiguredCategories",
+    "categoryCount",
     "categoryName",
     "displayOrder",
     "isPositionBased",
@@ -261,20 +267,30 @@ function buildPredictionExportCsv(payload) {
 
   const rows = [headers.join(",")];
   (payload?.races || []).forEach((race) => {
-    (race.categories || []).forEach((category) => {
+    const categoryRows = Array.isArray(race.categories) && race.categories.length > 0
+      ? race.categories
+      : [null];
+
+    categoryRows.forEach((category) => {
       rows.push([
         race.raceId,
         race.name,
+        race.circuitName || "",
+        race.externalRound || "",
         race.raceDate,
         race.deadlineAt,
         race.status,
+        race.isVisible,
         race.predictionsLive,
-        category.name,
-        category.displayOrder,
-        category.isPositionBased,
-        category.exactPoints,
-        category.partialPoints,
-        JSON.stringify(category.metadata || {})
+        race.hasSprintWeekend,
+        Array.isArray(race.categories) && race.categories.length > 0,
+        Array.isArray(race.categories) ? race.categories.length : 0,
+        category?.name || "",
+        category?.displayOrder ?? "",
+        category?.isPositionBased ?? "",
+        category?.exactPoints ?? "",
+        category?.partialPoints ?? "",
+        category ? JSON.stringify(category.metadata || {}) : ""
       ].map(escapeCsvValue).join(","));
     });
   });
@@ -408,6 +424,7 @@ export default function AdminPage() {
   const [predictionBulkPreview, setPredictionBulkPreview] = useState(null);
   const [predictionBulkPayload, setPredictionBulkPayload] = useState(null);
   const [predictionBulkFileName, setPredictionBulkFileName] = useState("");
+  const [predictionExportIncludeEmptyRaces, setPredictionExportIncludeEmptyRaces] = useState(true);
   const [predictionBulkConfirmState, setPredictionBulkConfirmState] = useState({
     isOpen: false,
     includePastRaces: false
@@ -1466,9 +1483,15 @@ export default function AdminPage() {
     setPredictionBulkMessage("");
 
     try {
-      const payload = await apiFetch(`/admin/bulk/predictions/export?year=${encodeURIComponent(predictionYear)}`);
+      const payload = await apiFetch(
+        `/admin/bulk/predictions/export?year=${encodeURIComponent(predictionYear)}&includeEmptyRaces=${predictionExportIncludeEmptyRaces ? "true" : "false"}`
+      );
       downloadJsonFile(`prediction-config-${predictionYear}.json`, payload);
-      setPredictionBulkMessage(`Exported prediction config for ${predictionYear}.`);
+      setPredictionBulkMessage(
+        predictionExportIncludeEmptyRaces
+          ? `Exported prediction config for ${predictionYear}, including races with no prediction options yet.`
+          : `Exported prediction config for ${predictionYear} with configured races only.`
+      );
     } catch (err) {
       setPredictionBulkMessage(err.message || "Failed to export prediction config.");
     }
@@ -1478,9 +1501,15 @@ export default function AdminPage() {
     setPredictionBulkMessage("");
 
     try {
-      const payload = await apiFetch(`/admin/bulk/predictions/export?year=${encodeURIComponent(predictionYear)}`);
+      const payload = await apiFetch(
+        `/admin/bulk/predictions/export?year=${encodeURIComponent(predictionYear)}&includeEmptyRaces=${predictionExportIncludeEmptyRaces ? "true" : "false"}`
+      );
       downloadTextFile(`prediction-config-${predictionYear}.csv`, buildPredictionExportCsv(payload), "text/csv;charset=utf-8");
-      setPredictionBulkMessage(`Exported prediction config CSV for ${predictionYear}.`);
+      setPredictionBulkMessage(
+        predictionExportIncludeEmptyRaces
+          ? `Exported prediction config CSV for ${predictionYear}, including races with no prediction options yet.`
+          : `Exported prediction config CSV for ${predictionYear} with configured races only.`
+      );
     } catch (err) {
       setPredictionBulkMessage(err.message || "Failed to export prediction config CSV.");
     }
@@ -1821,7 +1850,7 @@ export default function AdminPage() {
             <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
               <div>
                 <p className="font-semibold text-slate-100">Bulk Prediction Config</p>
-                <p className="mt-1 text-xs text-slate-400">Export all races for a season year, edit the JSON, preview the change summary, then apply future races by default.</p>
+                <p className="mt-1 text-xs text-slate-400">Export the season config as JSON or CSV, choose whether to include races with no prediction options yet, then import edited JSON back with a preview before applying.</p>
               </div>
                 <div className="flex flex-wrap gap-2">
                   <button
@@ -1841,13 +1870,22 @@ export default function AdminPage() {
                 </div>
             </div>
 
+            <label className="flex items-center gap-2 text-xs text-slate-300">
+              <input
+                type="checkbox"
+                checked={predictionExportIncludeEmptyRaces}
+                onChange={(e) => setPredictionExportIncludeEmptyRaces(e.target.checked)}
+              />
+              Include races that do not have prediction options configured yet so race IDs and season metadata stay aligned on re-import.
+            </label>
+
             <div>
               <input
                 type="file"
                 accept="application/json"
                 onChange={(e) => previewPredictionBulkFile(e.target.files?.[0])}
               />
-              <p className="mt-2 text-xs text-slate-400">Import a previously exported JSON file after editing category points or prediction category definitions.</p>
+              <p className="mt-2 text-xs text-slate-400">Import a previously exported JSON file after editing category points or prediction category definitions. CSV export is for offline review and spreadsheet editing support.</p>
             </div>
 
             {predictionBulkFileName ? (
